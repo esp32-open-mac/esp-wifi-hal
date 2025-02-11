@@ -140,10 +140,6 @@ static FRAMES_SINCE_LAST_TXPWR_CTRL: AtomicU8 = AtomicU8::new(0);
 
 #[inline(always)]
 fn process_tx_complete(slot: usize) {
-    if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
-        unsafe { tx_pwctrl_background(1, 0) };
-        FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
-    }
     let wifi = unsafe { WIFI::steal() };
     wifi.txq_state()
         .tx_complete_clear()
@@ -161,7 +157,7 @@ fn process_tx_timeout(slot: usize) {
         .modify(|r, w| unsafe { w.slot_timeout().bits(r.slot_timeout().bits() | (1 << slot)) });
     if slot < 5 {
         let tx_slot_config = wifi.tx_slot_config(4 - slot);
-        WiFi::set_tx_slot_invalid(tx_slot_config);
+        WiFi::invalidate_tx_slot(tx_slot_config);
         WiFi::disable_tx_slot(tx_slot_config);
         WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Timeout);
     }
@@ -175,7 +171,7 @@ fn process_collision(slot: usize) {
     });
     if slot < 5 {
         let tx_slot_config = wifi.tx_slot_config(4 - slot);
-        WiFi::set_tx_slot_invalid(tx_slot_config);
+        WiFi::invalidate_tx_slot(tx_slot_config);
         WiFi::disable_tx_slot(tx_slot_config);
         WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Collision);
     }
@@ -553,13 +549,13 @@ impl<'res> WiFi<'res> {
     fn disable_tx_slot(tx_slot_config: &TX_SLOT_CONFIG) {
         tx_slot_config
             .plcp0()
-            .modify(|_, w| w.slot_valid().bit(false).slot_enabled().bit(false));
+            .modify(|_, w| w.slot_valid().clear_bit().slot_enabled().clear_bit());
     }
     /// Invalidate the transmission slot.
-    fn set_tx_slot_invalid(tx_slot_config: &TX_SLOT_CONFIG) {
+    fn invalidate_tx_slot(tx_slot_config: &TX_SLOT_CONFIG) {
         tx_slot_config
             .plcp0()
-            .modify(|_, w| w.slot_valid().bit(false));
+            .modify(|_, w| w.slot_valid().clear_bit());
     }
     /// Set the packet for transmission.
     async fn transmit_internal(
@@ -633,7 +629,13 @@ impl<'res> WiFi<'res> {
             async fn wait_for_tx_complete(&self) -> WiFiResult<()> {
                 // Wait for the hardware to confirm transmission.
                 let res = match WIFI_TX_SLOTS[self.slot].wait().await {
-                    TxSlotStatus::Done => Ok(()),
+                    TxSlotStatus::Done => {
+                        if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
+                            unsafe { tx_pwctrl_background(1, 0) };
+                            FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
+                        }
+                        Ok(())
+                    }
                     TxSlotStatus::Collision => Err(WiFiError::TxCollision),
                     TxSlotStatus::Timeout => Err(WiFiError::TxTimeout),
                 };
@@ -644,7 +646,7 @@ impl<'res> WiFi<'res> {
         }
         impl Drop for CancelOnDrop<'_> {
             fn drop(&mut self) {
-                WiFi::set_tx_slot_invalid(self.tx_slot_config);
+                WiFi::invalidate_tx_slot(self.tx_slot_config);
                 WIFI_TX_SLOTS[self.slot].reset();
             }
         }
@@ -653,6 +655,9 @@ impl<'res> WiFi<'res> {
             slot,
         };
         cancel_on_drop.wait_for_tx_complete().await?;
+        // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
+        tx_slot_config.plcp0().reset();
+
         match self.wifi.pmd(reversed_slot).read().bits() >> 0xc {
             1 => Err(WiFiError::RtsTimeout),
             2 => Err(WiFiError::CtsTimeout),
@@ -739,6 +744,9 @@ impl<'res> WiFi<'res> {
         trace!("Changing channel to {channel_number}");
         Self::deinit_mac(&self.wifi);
         unsafe {
+            #[cfg(nomac_channel_set)]
+            crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
+            #[cfg(not(nomac_channel_set))]
             crate::ffi::chip_v7_set_chan(channel_number, 0);
             disable_wifi_agc();
         }

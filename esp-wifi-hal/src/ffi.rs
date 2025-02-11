@@ -57,7 +57,10 @@ unsafe extern "C" fn rtc_get_xtal() -> u32 {
 }
 
 extern "C" {
-    pub fn chip_v7_set_chan(channel: u8, idk: u8);
+    #[cfg(nomac_channel_set)]
+    pub fn chip_v7_set_chan_nomac(channel: u8, bandwidth: u8);
+    #[cfg(not(nomac_channel_set))]
+    pub fn chip_v7_set_chan(channel: u8, bandwidth: u8);
     pub fn hal_init();
     pub fn tx_pwctrl_background(_: u8, _: u8);
     pub fn enable_wifi_agc();

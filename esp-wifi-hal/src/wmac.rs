@@ -288,14 +288,21 @@ impl Drop for BorrowedBuffer<'_> {
             .lock(|dma_list| dma_list.borrow_mut().recycle(self.dma_list_item));
     }
 }
-serializable_enum! {
-    /// The bank of the rx filter.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    pub enum RxFilterBank : u8 {
-        BSSID => 0,
-        ReceiverAddress => 1
+/// The bank of the rx filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RxFilterBank {
+    BSSID,
+    ReceiverAddress,
+}
+impl RxFilterBank {
+    const fn into_bits(self) -> usize {
+        match self {
+            Self::BSSID => 0,
+            Self::ReceiverAddress => 1,
+        }
     }
 }
+/// Errors returned by the Wi-Fi driver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WiFiError {
     InvalidChannel,
@@ -333,6 +340,7 @@ impl Default for TxParameters {
     }
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// This determines what frames bypass the RX filter.
 pub enum ScanningMode {
     #[default]
     Disabled,
@@ -340,6 +348,7 @@ pub enum ScanningMode {
     ManagementAndData,
 }
 
+/// A [Result] returned by the Wi-Fi driver.
 pub type WiFiResult<T> = Result<T, WiFiError>;
 
 /// Driver for the Wi-Fi peripheral.
@@ -779,7 +788,7 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
         self.wifi
-            .filter_bank(bank.into_bits() as usize)
+            .filter_bank(bank.into_bits())
             .mask_high(interface)
             .modify(|_, w| w.enabled().bit(enabled));
         Ok(())
@@ -824,7 +833,7 @@ impl<'res> WiFi<'res> {
         mask: [u8; 6],
     ) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
-        let bank = self.wifi.filter_bank(bank.into_bits() as usize);
+        let bank = self.wifi.filter_bank(bank.into_bits());
         bank.addr_low(interface)
             .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
         bank.addr_high(interface).write(|w| unsafe {

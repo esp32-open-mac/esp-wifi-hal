@@ -1,5 +1,6 @@
 use core::{
     cell::RefCell,
+    mem::forget,
     ops::{Deref, Range},
     pin::{pin, Pin},
 };
@@ -635,9 +636,12 @@ impl<'res> WiFi<'res> {
             slot: usize,
         }
         impl CancelOnDrop<'_> {
-            async fn wait_for_tx_complete(&self) -> WiFiResult<()> {
+            async fn wait_for_tx_complete(self) -> WiFiResult<()> {
                 // Wait for the hardware to confirm transmission.
-                let res = match WIFI_TX_SLOTS[self.slot].wait().await {
+                let res = WIFI_TX_SLOTS[self.slot].wait().await;
+                // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
+                self.tx_slot_config.plcp0().reset();
+                let res = match res {
                     TxSlotStatus::Done => {
                         if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
                             unsafe { tx_pwctrl_background(1, 0) };
@@ -649,6 +653,7 @@ impl<'res> WiFi<'res> {
                     TxSlotStatus::Timeout => Err(WiFiError::TxTimeout),
                 };
                 WIFI_TX_SLOTS[self.slot].reset();
+                forget(self);
                 trace!("TX complete {res:?}");
                 res
             }
@@ -664,8 +669,6 @@ impl<'res> WiFi<'res> {
             slot,
         };
         cancel_on_drop.wait_for_tx_complete().await?;
-        // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
-        tx_slot_config.plcp0().reset();
 
         match self.wifi.pmd(reversed_slot).read().bits() >> 0xc {
             1 => Err(WiFiError::RtsTimeout),

@@ -4,9 +4,9 @@
 extern crate alloc;
 
 use embassy_executor::Spawner;
-use esp_wifi_hal::{DMAResources, RxFilterBank, WiFi};
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
+use esp_wifi_hal::{DMAResources, RxFilterBank, WiFi};
 use ieee80211::GenericFrame;
 use log::{info, LevelFilter};
 

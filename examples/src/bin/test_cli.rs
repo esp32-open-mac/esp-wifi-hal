@@ -28,7 +28,6 @@ use ieee80211::{
         DSSSParameterSetElement, SSIDElement,
     },
     mac_parser::{MACAddress, BROADCAST},
-    macro_bits::{bit, check_bit},
     match_frames,
     mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
     scroll::Pwrite,

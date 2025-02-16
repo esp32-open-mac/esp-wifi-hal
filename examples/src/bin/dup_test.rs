@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
-use esp_wifi_hal::{DMAResources, TxErrorBehaviour, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{DMAResources, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
     element_chain,

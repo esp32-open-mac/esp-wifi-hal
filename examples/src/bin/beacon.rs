@@ -48,7 +48,7 @@ async fn main(_spawner: Spawner) {
         peripherals.ADC2,
         dma_resources,
     );
-    let module_mac_address = Efuse::read_base_mac_address().into();
+    let module_mac_address = Efuse::read_base_mac_address();
     let _ = wifi.set_filter(
         esp_wifi_hal::RxFilterBank::BSSID,
         0,

@@ -77,7 +77,7 @@ async fn main(_spawner: Spawner) {
             .transmit(
                 &mut buf[..written],
                 &TxParameters {
-                    tx_timeout: 30,
+                    ack_timeout: 30,
                     ..Default::default()
                 },
                 Some(0),

@@ -327,7 +327,8 @@ pub struct TxParameters {
     pub override_seq_num: bool,
     /// What to do in case an error occurs.
     pub tx_error_behaviour: TxErrorBehaviour,
-    pub tx_timeout: usize,
+    /// The maximum amount of time an ACK can take to arrive.
+    pub ack_timeout: usize,
 }
 impl Default for TxParameters {
     fn default() -> Self {
@@ -336,7 +337,7 @@ impl Default for TxParameters {
             duration: 0,
             override_seq_num: false,
             tx_error_behaviour: TxErrorBehaviour::Drop,
-            tx_timeout: 10,
+            ack_timeout: 10,
         }
     }
 }
@@ -581,7 +582,7 @@ impl<'res> WiFi<'res> {
         let tx_slot_config = self.wifi.tx_slot_config(reversed_slot);
         tx_slot_config
             .config()
-            .write(|w| unsafe { w.timeout().bits(tx_parameters.tx_timeout as u16) });
+            .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
 
         tx_slot_config.plcp0().write(|w| unsafe {
             w.dma_addr()

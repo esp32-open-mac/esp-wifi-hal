@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 
-esp-wifi-hal = { path = "../esp-wifi-hal/", features = ["log"] }
+esp-wifi-hal = { path = "../esp-wifi-hal/" }
 
 # ESP-HAL dependencies
 esp-hal = "0.23.1"
@@ -31,7 +31,6 @@ embassy-executor = "0.7.0"
 embassy-time = "0.4.0"
 
 [features]
-default = ["esp32"]
 esp32 = ["esp-wifi-hal/esp32", "esp-hal/esp32", "esp-hal-embassy/esp32", "esp-backtrace/esp32"]
 esp32s2 = ["esp-wifi-hal/esp32s2", "esp-hal/esp32s2", "esp-hal-embassy/esp32s2", "esp-backtrace/esp32s2"]
 esp32c3 = ["esp-wifi-hal/esp32c3", "esp-hal/esp32c3", "esp-hal-embassy/esp32c3", "esp-backtrace/esp32c3"]

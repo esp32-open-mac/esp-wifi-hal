@@ -654,7 +654,7 @@ impl<'res> WiFi<'res> {
                 };
                 WIFI_TX_SLOTS[self.slot].reset();
                 forget(self);
-                trace!("TX complete {res:?}");
+                trace!("TX complete {:?}", res);
                 res
             }
         }
@@ -753,7 +753,7 @@ impl<'res> WiFi<'res> {
         if !(1..=14).contains(&channel_number) {
             return Err(WiFiError::InvalidChannel);
         }
-        trace!("Changing channel to {channel_number}");
+        trace!("Changing channel to {}.", channel_number);
         Self::deinit_mac(&self.wifi);
         unsafe {
             #[cfg(nomac_channel_set)]

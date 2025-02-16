@@ -33,30 +33,6 @@ macro_rules! assert_eq {
 }
 
 #[collapse_debuginfo(yes)]
-macro_rules! assert_ne {
-    ($($x:tt)*) => {
-        {
-            #[cfg(not(feature = "defmt"))]
-            ::core::assert_ne!($($x)*);
-            #[cfg(feature = "defmt")]
-            ::defmt::assert_ne!($($x)*);
-        }
-    };
-}
-
-#[collapse_debuginfo(yes)]
-macro_rules! debug_assert {
-    ($($x:tt)*) => {
-        {
-            #[cfg(not(feature = "defmt"))]
-            ::core::debug_assert!($($x)*);
-            #[cfg(feature = "defmt")]
-            ::defmt::debug_assert!($($x)*);
-        }
-    };
-}
-
-#[collapse_debuginfo(yes)]
 macro_rules! debug_assert_eq {
     ($($x:tt)*) => {
         {
@@ -265,7 +241,7 @@ impl LowerHex for Bytes<'_> {
 }
 
 #[cfg(feature = "defmt")]
-impl<'a> defmt::Format for Bytes<'a> {
+impl defmt::Format for Bytes<'_> {
     fn format(&self, fmt: defmt::Formatter) {
         defmt::write!(fmt, "{:02x}", self.0)
     }

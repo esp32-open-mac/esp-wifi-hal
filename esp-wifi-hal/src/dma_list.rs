@@ -11,7 +11,7 @@ use bitfield_struct::bitfield;
 use embassy_sync::blocking_mutex;
 use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 
-#[bitfield(u32)]
+#[bitfield(u32, defmt = cfg(feature = "defmt"))]
 pub struct DMAListHeader {
     #[bits(12)]
     pub buffer_size: u16,
@@ -296,7 +296,7 @@ impl<'res> DMAList<'res> {
             Self::next_rx_descr_ptr() as u32,
             Self::last_rx_descr_ptr() as u32,
         );
-        trace!("DMA list: Next: {rx_next:x} Last: {rx_last:x}");
+        trace!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
     }
 }
 unsafe impl Send for DMAList<'_> {}

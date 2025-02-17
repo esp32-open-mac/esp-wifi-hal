@@ -304,6 +304,7 @@ impl RxFilterBank {
     }
 }
 /// Errors returned by the Wi-Fi driver.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WiFiError {
     InvalidChannel,

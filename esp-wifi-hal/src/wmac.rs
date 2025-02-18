@@ -1,16 +1,16 @@
+use atomic_waker::AtomicWaker;
 use core::{
     cell::RefCell,
+    future::poll_fn,
     mem::forget,
     ops::{Deref, Range},
     pin::{pin, Pin},
+    task::Poll,
 };
 use portable_atomic::{AtomicU16, AtomicU8, Ordering};
 
 use crate::{esp_pac::wifi::TX_SLOT_CONFIG, sync::TxSlotStatus};
-use embassy_sync::{
-    blocking_mutex::{self},
-    channel::{Channel, DynamicSender},
-};
+use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
 use esp_hal::{
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
@@ -87,7 +87,7 @@ impl WiFiRate {
 /// It is used, to make sure that access to a slot is exclusive.
 /// It will return the slot back into the slot queue once dropped.
 struct BorrowedTxSlot<'a> {
-    dyn_sender: DynamicSender<'a, usize>,
+    state: &'a blocking_mutex::Mutex<DefaultRawMutex, RefCell<u8>>,
     slot: usize,
 }
 impl Deref for BorrowedTxSlot<'_> {
@@ -100,31 +100,49 @@ impl Drop for BorrowedTxSlot<'_> {
     fn drop(&mut self) {
         // We can ignore the result here, because we know that this slot was taken from the queue,
         // and therefore the queue must have space for it.
-        let _ = self.dyn_sender.try_send(self.slot);
+        self.state.lock(|rc| {
+            let mut state = rc.borrow_mut();
+            *state |= 1 << self.slot;
+        });
         trace!("Slot {} is now free again.", self.slot);
     }
 }
 /// This keeps track of all the TX slots available, by using a queue of slot numbers in the
 /// background, which makes it possible to await a slot becoming free.
 struct TxSlotQueue {
-    slots: Channel<DefaultRawMutex, usize, 5>,
+    state: blocking_mutex::Mutex<DefaultRawMutex, RefCell<u8>>,
+    waker: AtomicWaker,
 }
 impl TxSlotQueue {
     /// Create a new slot manager.
     pub fn new(slots: Range<usize>) -> Self {
-        let temp = Self {
-            slots: Channel::new(),
-        };
-        for slot in slots {
-            let _ = temp.slots.try_send(slot);
+        assert!(slots.end <= 5);
+        Self {
+            state: blocking_mutex::Mutex::new(RefCell::new(
+                slots.fold(0u8, |acc, bit_index| acc | (1 << bit_index)),
+            )),
+            waker: AtomicWaker::new(),
         }
-        temp
     }
     /// Asynchronously wait for a new slot to become available.
     pub async fn wait_for_slot(&self) -> BorrowedTxSlot {
+        let slot = poll_fn(|cx| {
+            self.state.lock(|rc| {
+                let mut state = rc.borrow_mut();
+                let trailing_zeros = state.trailing_zeros();
+                if trailing_zeros == 8 {
+                    self.waker.register(cx.waker());
+                    Poll::Pending
+                } else {
+                    *state &= !(1 << trailing_zeros);
+                    Poll::Ready(trailing_zeros as usize)
+                }
+            })
+        })
+        .await;
         BorrowedTxSlot {
-            dyn_sender: self.slots.dyn_sender(),
-            slot: self.slots.receive().await,
+            state: &self.state,
+            slot,
         }
     }
 }

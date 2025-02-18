@@ -334,14 +334,13 @@ pub enum WiFiError {
     AckTimeout,
     CtsTimeout,
     RtsTimeout,
+    BufferTooShort,
 }
 /// Parameters for the transmission of an MPDU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TxParameters {
     /// The rate at which to tranmsit the packet.
     pub rate: WiFiRate,
-    /// The duration of the TXOP.
-    pub duration: u16,
     /// Override the sequence number, with the one maintained by the driver.
     ///
     /// This is recommended.
@@ -355,7 +354,6 @@ impl Default for TxParameters {
     fn default() -> Self {
         Self {
             rate: WiFiRate::default(),
-            duration: 0,
             override_seq_num: false,
             tx_error_behaviour: TxErrorBehaviour::Drop,
             ack_timeout: 10,
@@ -596,6 +594,7 @@ impl<'res> WiFi<'res> {
         dma_list_item: Pin<&TxDMAListItem>,
         tx_parameters: &TxParameters,
         ack_for_interface: Option<usize>,
+        duration: u16,
         slot: usize,
     ) -> WiFiResult<()> {
         let length = dma_list_item.buffer().len();
@@ -632,7 +631,7 @@ impl<'res> WiFi<'res> {
         self.wifi
             .plcp2(reversed_slot)
             .write(|w| w.unknown().bit(true));
-        let duration = tx_parameters.duration as u32;
+        let duration = duration as u32;
         self.wifi
             .duration(reversed_slot)
             .write(|w| unsafe { w.bits(duration | (duration << 0x10)) });
@@ -676,7 +675,6 @@ impl<'res> WiFi<'res> {
                 };
                 WIFI_TX_SLOTS[self.slot].reset();
                 forget(self);
-                trace!("TX complete {:?}", res);
                 res
             }
         }
@@ -721,11 +719,20 @@ impl<'res> WiFi<'res> {
         let slot = self.tx_slot_queue.wait_for_slot().await;
         trace!("Acquired slot {}.", *slot);
 
+        let Some(duration) = buffer
+            .get(2..4)
+            .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()))
+        else {
+            return Err(WiFiError::BufferTooShort);
+        };
+
         if tx_parameters.override_seq_num {
             let seq_num = self.sequence_number.load(Ordering::Relaxed).wrapping_add(1);
             self.sequence_number.store(seq_num, Ordering::Relaxed);
             if let Some(sequence_number) = buffer.get_mut(22..24) {
                 sequence_number.copy_from_slice((seq_num << 4).to_le_bytes().as_slice());
+            } else {
+                return Err(WiFiError::BufferTooShort);
             }
         }
 
@@ -738,13 +745,25 @@ impl<'res> WiFi<'res> {
 
         match tx_parameters.tx_error_behaviour {
             TxErrorBehaviour::Drop => {
-                self.transmit_internal(dma_list_ref, tx_parameters, ack_for_interface, *slot)
-                    .await?;
+                self.transmit_internal(
+                    dma_list_ref,
+                    tx_parameters,
+                    ack_for_interface,
+                    duration,
+                    *slot,
+                )
+                .await?;
                 Ok(0)
             }
             TxErrorBehaviour::RetryUntil(retries) => {
                 let mut res = self
-                    .transmit_internal(dma_list_ref, tx_parameters, ack_for_interface, *slot)
+                    .transmit_internal(
+                        dma_list_ref,
+                        tx_parameters,
+                        ack_for_interface,
+                        duration,
+                        *slot,
+                    )
                     .await;
                 for i in 0..retries {
                     match res {
@@ -758,7 +777,13 @@ impl<'res> WiFi<'res> {
                         }
                     }
                     res = self
-                        .transmit_internal(dma_list_ref, tx_parameters, ack_for_interface, *slot)
+                        .transmit_internal(
+                            dma_list_ref,
+                            tx_parameters,
+                            ack_for_interface,
+                            duration,
+                            *slot,
+                        )
                         .await;
                 }
                 res.map(|_| 0)

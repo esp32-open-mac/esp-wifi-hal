@@ -22,7 +22,6 @@ use ieee80211::{
     scroll::Pwrite,
     supported_rates,
 };
-use log::LevelFilter;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{

@@ -240,6 +240,7 @@ extern "C" fn interrupt_handler() {
 }
 
 /// What should be done, if an error occurs, while transmitting.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TxErrorBehaviour {
     /// Retry as many times, as specified.
@@ -290,6 +291,7 @@ impl Drop for BorrowedBuffer<'_> {
     }
 }
 /// The bank of the rx filter.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RxFilterBank {
     BSSID,
@@ -315,8 +317,8 @@ pub enum WiFiError {
     CtsTimeout,
     RtsTimeout,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 /// Parameters for the transmission of an MPDU.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TxParameters {
     /// The rate at which to tranmsit the packet.
     pub rate: WiFiRate,
@@ -342,8 +344,9 @@ impl Default for TxParameters {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 /// This determines what frames bypass the RX filter.
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ScanningMode {
     #[default]
     Disabled,

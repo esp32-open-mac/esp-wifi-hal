@@ -168,6 +168,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmt-or-log"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8370630b4dee85ab47d9087813771c5c7fe88d24fdd48649bbdfe6089da4c53a"
+dependencies = [
+ "defmt",
+ "defmt-or-log-macros",
+ "log",
+]
+
+[[package]]
+name = "defmt-or-log-macros"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d675dd299edbb7c8e01d4e9f520a0d8f22a8fe4af812c211c3fad5e9dcf41763"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "defmt-parser"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -520,7 +542,7 @@ dependencies = [
  "bitfield-struct",
  "cfg-if",
  "critical-section",
- "defmt",
+ "defmt-or-log",
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
@@ -529,7 +551,6 @@ dependencies = [
  "esp32",
  "esp32c3",
  "esp32s2",
- "log",
  "macro-bits",
  "portable-atomic",
  "static_cell",

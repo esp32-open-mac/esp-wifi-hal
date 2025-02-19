@@ -49,7 +49,9 @@
 
 #![no_std]
 #![allow(unexpected_cfgs)]
-pub(crate) mod fmt;
+
+#[macro_use]
+extern crate defmt_or_log;
 
 mod dma_list;
 mod ffi;

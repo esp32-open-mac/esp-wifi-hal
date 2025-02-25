@@ -52,7 +52,7 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let mut dma_resources = Box::new(DMAResources::<1500, 10>::new());
+    let mut dma_resources = Box::new(DMAResources::<10>::new());
     let mut wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,

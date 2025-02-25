@@ -40,6 +40,8 @@ opt-level = 's'
 overflow-checks = false
 
 [features]
+default = ["esp32"]
+
 esp32 = ["dep:esp32", "esp-hal/esp32", "esp-wifi-sys/esp32"]
 esp32s2 = ["dep:esp32s2", "esp-hal/esp32s2", "esp-wifi-sys/esp32s2", "portable-atomic/critical-section"]
 

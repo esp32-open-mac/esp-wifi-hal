@@ -509,11 +509,11 @@ impl<'res> WiFi<'res> {
         Self::set_rx_status(wifi, true);
     }
     /// Initialize the WiFi peripheral.
-    pub fn new<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize>(
+    pub fn new<const BUFFER_COUNT: usize>(
         wifi: WIFI,
         mut radio_clock: RADIO_CLK,
         _adc2: ADC2,
-        dma_resources: &'res mut DMAResources<BUFFER_SIZE, BUFFER_COUNT>,
+        dma_resources: &'res mut DMAResources<BUFFER_COUNT>,
     ) -> Self {
         trace!("Initializing WiFi.");
         Self::enable_wifi_power_domain();

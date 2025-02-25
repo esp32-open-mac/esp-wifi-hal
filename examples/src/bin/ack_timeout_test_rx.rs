@@ -28,7 +28,7 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(DMAResources<1500, 10>, DMAResources::new());
+    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,

@@ -505,7 +505,7 @@ async fn main(_spawner: Spawner) {
     .into_async()
     .split();
 
-    let dma_resources = mk_static!(DMAResources<1500, 10>, DMAResources::new());
+    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,

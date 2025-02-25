@@ -107,15 +107,18 @@ impl<Use> DMAListItem<Use> {
 }
 pub type RxDMAListItem = DMAListItem<Rx>;
 pub type TxDMAListItem = DMAListItem<Tx>;
-pub struct DMAResources<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize> {
-    buffers: [[u8; BUFFER_SIZE]; BUFFER_COUNT],
+
+const RX_BUFFER_SIZE: usize = 1600;
+
+pub struct DMAResources<const BUFFER_COUNT: usize> {
+    buffers: [[u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
     dma_list_items: [RxDMAListItem; BUFFER_COUNT],
     dma_list: MaybeUninit<blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>>>,
 }
-impl<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize> DMAResources<BUFFER_SIZE, BUFFER_COUNT> {
+impl<const BUFFER_COUNT: usize> DMAResources<BUFFER_COUNT> {
     pub const fn new() -> Self {
         Self {
-            buffers: [[0u8; BUFFER_SIZE]; BUFFER_COUNT],
+            buffers: [[0u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
             dma_list_items: [RxDMAListItem::UNINIT; BUFFER_COUNT],
             dma_list: MaybeUninit::uninit(),
         }
@@ -140,14 +143,12 @@ impl<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize> DMAResources<BUFFER_SI
             NonNull::new(addr_of_mut!(self.dma_list_items[0])).unwrap(),
             NonNull::new(addr_of_mut!(self.dma_list_items[BUFFER_COUNT - 1])).unwrap(),
         );
-        let dma_list: DMAList<'static> = DMAList::new::<BUFFER_SIZE, BUFFER_COUNT>(rx_chain_ptrs);
+        let dma_list: DMAList<'static> = DMAList::new(rx_chain_ptrs);
         self.dma_list = MaybeUninit::new(blocking_mutex::Mutex::new(RefCell::new(dma_list)));
         unsafe { self.dma_list.assume_init_ref() }
     }
 }
-impl<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize> Default
-    for DMAResources<BUFFER_SIZE, BUFFER_COUNT>
-{
+impl<const BUFFER_COUNT: usize> Default for DMAResources<BUFFER_COUNT> {
     fn default() -> Self {
         Self::new()
     }
@@ -202,11 +203,9 @@ impl<'res> DMAList<'res> {
             .bits() as _
     }
     /// Instantiate a new DMAList.
-    fn new<const BUFFER_SIZE: usize, const BUFFER_COUNT: usize>(
-        rx_chain_ptrs: (NonNull<RxDMAListItem>, NonNull<RxDMAListItem>),
-    ) -> Self {
+    fn new(rx_chain_ptrs: (NonNull<RxDMAListItem>, NonNull<RxDMAListItem>)) -> Self {
         Self::set_rx_base_addr(Some(rx_chain_ptrs.0));
-        debug!("Initialized DMA list.");
+        trace!("Initialized DMA list.");
         Self::log_stats();
         Self {
             rx_chain_ptrs: Some(rx_chain_ptrs),

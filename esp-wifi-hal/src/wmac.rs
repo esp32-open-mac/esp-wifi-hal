@@ -280,13 +280,25 @@ impl BorrowedBuffer<'_> {
     pub fn raw_buffer(&self) -> &[u8] {
         self.dma_list_item.buffer()
     }
+    /// Same as [Self::raw_buffer], but mutable.
+    pub fn raw_buffer_mut(&mut self) -> &mut [u8] {
+        self.dma_list_item.buffer_mut()
+    }
     /// Returns the actual MPDU from the buffer excluding the prepended [wifi_pkt_rx_ctrl_t].
     pub fn mpdu_buffer(&self) -> &[u8] {
         &self.raw_buffer()[size_of::<wifi_pkt_rx_ctrl_t>()..]
     }
+    /// Same as [Self::mpdu_buffer], but mutable.
+    pub fn mpdu_buffer_mut(&mut self) -> &mut [u8] {
+        &mut self.raw_buffer_mut()[size_of::<wifi_pkt_rx_ctrl_t>()..]
+    }
     /// Returns the header attached by the hardware.
     pub fn header_buffer(&self) -> &[u8] {
         &self.raw_buffer()[0..size_of::<wifi_pkt_rx_ctrl_t>()]
+    }
+    /// Same as [Self::header_buffer], but mutable.
+    pub fn header_buffer_mut(&mut self) -> &mut [u8] {
+        &mut self.raw_buffer_mut()[0..size_of::<wifi_pkt_rx_ctrl_t>()]
     }
     /// The Received Signal Strength Indicator (RSSI).
     pub fn rssi(&self) -> i8 {

@@ -95,6 +95,16 @@ impl<Use> DMAListItem<Use> {
             )
         }
     }
+    /// Same as [Self::buffer], but mutable.
+    pub fn buffer_mut(&mut self) -> &mut [u8] {
+        assert!(!self.buffer.is_null());
+        unsafe {
+            slice::from_raw_parts_mut(
+                self.buffer as _,
+                self.dma_list_header.buffer_length() as usize,
+            )
+        }
+    }
     fn next(&mut self) -> Option<NonNull<Self>> {
         NonNull::new(self.next)
     }

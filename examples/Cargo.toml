@@ -29,11 +29,12 @@ embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
 embassy-executor = "0.7.0"
 embassy-time = "0.4.0"
+embassy-sync = "0.6.2"
+fugit = "0.3.7"
 
 [features]
 esp32 = ["esp-wifi-hal/esp32", "esp-hal/esp32", "esp-hal-embassy/esp32", "esp-backtrace/esp32"]
 esp32s2 = ["esp-wifi-hal/esp32s2", "esp-hal/esp32s2", "esp-hal-embassy/esp32s2", "esp-backtrace/esp32s2"]
-esp32c3 = ["esp-wifi-hal/esp32c3", "esp-hal/esp32c3", "esp-hal-embassy/esp32c3", "esp-backtrace/esp32c3"]
 
 [profile.dev]
 # Rust debug is too slow.

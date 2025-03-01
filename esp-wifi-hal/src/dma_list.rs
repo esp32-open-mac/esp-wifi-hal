@@ -11,6 +11,9 @@ use bitfield_struct::bitfield;
 use embassy_sync::blocking_mutex;
 use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 
+// Required to fix compile error for bitfield.
+use core::panic;
+
 #[bitfield(u32, defmt = cfg(feature = "defmt"))]
 pub struct DMAListHeader {
     #[bits(12)]

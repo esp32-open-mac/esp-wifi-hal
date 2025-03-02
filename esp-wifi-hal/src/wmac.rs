@@ -781,11 +781,11 @@ impl<'res> WiFi<'res> {
                     match res {
                         Ok(()) => return Ok(i),
                         Err(WiFiError::TxTimeout | WiFiError::TxCollision) => {}
-                        _ => {
+                        Err(err) => {
                             if let Some(byte) = buffer.get_mut(1) {
                                 *byte |= bit!(3);
                             }
-                            debug!("Retransmitting MPDU.");
+                            debug!("Retransmitting MPDU due to error: {:?}.", err);
                         }
                     }
                     res = self

@@ -26,6 +26,7 @@ cfg-if = "1.0.0"
 defmt-or-log = { version = "0.2.1", default-features = false }
 defmt = { version = "0.3.10", optional = true }
 bitfield-struct = "0.10.1"
+log = { version = "0.4.26", optional = true }
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
@@ -45,5 +46,5 @@ esp32 = ["dep:esp32", "esp-hal/esp32", "esp-wifi-sys/esp32"]
 esp32s2 = ["dep:esp32s2", "esp-hal/esp32s2", "esp-wifi-sys/esp32s2", "portable-atomic/critical-section"]
 
 defmt = ["dep:defmt", "defmt-or-log/defmt"]
-log = ["defmt-or-log/log"]
+log = ["dep:log", "defmt-or-log/log"]
 critical_section = []

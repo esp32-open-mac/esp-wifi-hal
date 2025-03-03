@@ -623,7 +623,7 @@ impl<'res> WiFi<'res> {
         });
         // I hacked the wait for ACK bit in here, since I messed it up in the SVD.
         tx_slot_config.plcp0().modify(|r, w| unsafe {
-            w.bits(r.bits() | 0x600000 | ((ack_for_interface.is_some() as u32) << 27))
+            w.bits(r.bits() | 0x600000 | ((ack_for_interface.is_some() as u32) << 27) | (1 << 28))
         });
         let rate = tx_parameters.rate;
 

@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "esp-wifi-hal"
-version = "0.1.0"
+version = "0.1.0-alpha"
 dependencies = [
  "atomic-waker",
  "bitfield-struct",

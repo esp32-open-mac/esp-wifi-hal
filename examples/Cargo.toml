@@ -10,8 +10,8 @@ license = "MIT OR Apache-2.0"
 esp-wifi-hal = { path = "../esp-wifi-hal/" }
 
 # ESP-HAL dependencies
-esp-hal = "0.23.1"
-esp-hal-embassy = "0.6.0"
+esp-hal = "1.0.0-beta.0"
+esp-hal-embassy = "0.7.0"
 esp-alloc = "0.6.0"
 esp-backtrace = { version = "0.15.0", features = [
     "panic-handler",

@@ -16,7 +16,7 @@ use esp_backtrace as _;
 use esp_hal::{
     efuse::Efuse,
     timer::timg::TimerGroup,
-    uart::{Config, Uart, UartRx},
+    uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
 use esp_wifi_hal::{DMAResources, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
@@ -497,7 +497,7 @@ async fn main(_spawner: Spawner) {
 
     let (mut uart0_rx, mut uart0_tx) = Uart::new(
         peripherals.UART0,
-        Config::default().with_rx_fifo_full_threshold(64),
+        Config::default().with_rx(RxConfig::default().with_fifo_full_threshold(64)),
     )
     .unwrap()
     .with_rx(rx_pin)

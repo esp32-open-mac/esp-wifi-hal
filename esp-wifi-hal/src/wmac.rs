@@ -13,11 +13,11 @@ use crate::{esp_pac::wifi::TX_SLOT_CONFIG, sync::TxSlotStatus};
 use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
 use esp_hal::{
+    clock::RadioClockController,
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
     peripherals::{Interrupt, ADC2, LPWR, RADIO_CLK, WIFI},
     ram,
-    system::{RadioClockController, RadioPeripherals},
-    Cpu,
+    system::Cpu,
 };
 use esp_wifi_sys::include::{
     esp_phy_calibration_data_t, esp_phy_calibration_mode_t_PHY_RF_CAL_FULL, register_chipv7_phy,
@@ -159,7 +159,7 @@ static FRAMES_SINCE_LAST_TXPWR_CTRL: AtomicU8 = AtomicU8::new(0);
 
 #[inline(always)]
 fn process_tx_complete(slot: usize) {
-    let wifi = unsafe { WIFI::steal() };
+    let wifi = WIFI::regs();
     wifi.txq_state()
         .tx_complete_clear()
         .modify(|r, w| unsafe { w.bits(r.bits() | (1 << slot)) });
@@ -169,8 +169,7 @@ fn process_tx_complete(slot: usize) {
 }
 #[inline(always)]
 fn process_tx_timeout(slot: usize) {
-    let wifi = unsafe { WIFI::steal() };
-
+    let wifi = WIFI::regs();
     wifi.txq_state()
         .tx_error_clear()
         .modify(|r, w| unsafe { w.slot_timeout().bits(r.slot_timeout().bits() | (1 << slot)) });
@@ -183,7 +182,7 @@ fn process_tx_timeout(slot: usize) {
 }
 #[inline(always)]
 fn process_collision(slot: usize) {
-    let wifi = unsafe { WIFI::steal() };
+    let wifi = WIFI::regs();
     wifi.txq_state().tx_error_clear().modify(|r, w| unsafe {
         w.slot_collision()
             .bits(r.slot_collision().bits() | (1 << slot))
@@ -199,7 +198,7 @@ fn process_collision(slot: usize) {
 #[ram]
 extern "C" fn interrupt_handler() {
     // We don't want to have to steal this all the time.
-    let wifi = unsafe { WIFI::steal() };
+    let wifi = WIFI::regs();
 
     let cause = wifi.mac_interrupt().wifi_int_status().read().bits();
     if cause == 0 {
@@ -406,7 +405,6 @@ static MAC_SYSTEM_TIME_DELTA: AtomicU64 = AtomicU64::new(0);
 
 /// Driver for the Wi-Fi peripheral.
 pub struct WiFi<'res> {
-    radio_clock: RADIO_CLK,
     wifi: WIFI,
     dma_list: &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>>,
     current_channel: AtomicU8,
@@ -416,15 +414,6 @@ pub struct WiFi<'res> {
 impl<'res> WiFi<'res> {
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
     pub const INTERFACE_COUNT: usize = 4;
-    /// Returns the name of a radio peripheral.
-    fn radio_peripheral_name(radio_peripheral: &RadioPeripherals) -> &'static str {
-        match radio_peripheral {
-            #[cfg(not(feature = "esp32s2"))]
-            RadioPeripherals::Bt => "BT",
-            RadioPeripherals::Phy => "PHY",
-            RadioPeripherals::Wifi => "WiFi",
-        }
-    }
     /// Enable the Wi-Fi power domain.
     fn enable_wifi_power_domain() {
         unsafe {
@@ -439,38 +428,9 @@ impl<'res> WiFi<'res> {
                 .modify(|_, w| w.wifi_force_iso().clear_bit());
         }
     }
-    /// Disable the Wi-Fi power domain.
-    fn disable_wifi_power_domain() {
-        unsafe {
-            let rtc_cntl = &*LPWR::ptr();
-            trace!("Disabling WiFi power domain.");
-            rtc_cntl
-                .dig_iso()
-                .modify(|_, w| w.wifi_force_iso().set_bit());
-            rtc_cntl
-                .dig_pwc()
-                .modify(|_, w| w.wifi_force_pd().set_bit());
-        }
-    }
-    /// Enable the specified clock.
-    fn enable_clock(radio_clock: &mut RADIO_CLK, radio_peripheral: RadioPeripherals) {
-        trace!(
-            "Enabling {} clock.",
-            Self::radio_peripheral_name(&radio_peripheral)
-        );
-        radio_clock.enable(radio_peripheral);
-    }
-    /// Disable the specified clock.
-    fn disable_clock(radio_clock: &mut RADIO_CLK, radio_peripheral: RadioPeripherals) {
-        trace!(
-            "Disabling {} clock.",
-            Self::radio_peripheral_name(&radio_peripheral)
-        );
-        radio_clock.disable(radio_peripheral);
-    }
     /// Enable the PHY.
-    fn phy_enable(radio_clock: &mut RADIO_CLK) {
-        Self::enable_clock(radio_clock, RadioPeripherals::Phy);
+    fn phy_enable(radio_clock: &mut RadioClockController<'static>) {
+        radio_clock.enable_phy(true);
         let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
         let init_data = &PHY_INIT_DATA_DEFAULT;
         trace!("Enabling PHY.");
@@ -483,22 +443,24 @@ impl<'res> WiFi<'res> {
         }
     }
     /// Reset the MAC.
-    fn reset_mac(radio_clock: &mut RADIO_CLK, wifi: &WIFI) {
+    fn reset_mac(radio_clock: &mut RadioClockController<'static>, wifi: &WIFI) {
         trace!("Reseting MAC.");
         radio_clock.reset_mac();
-        wifi.ctrl()
+        wifi.register_block()
+            .ctrl()
             .modify(|r, w| unsafe { w.bits(r.bits() & 0x7fffffff) });
     }
     /// Initialize the MAC.
     fn init_mac(wifi: &WIFI) {
         trace!("Initializing MAC.");
-        wifi.ctrl()
+        wifi.register_block()
+            .ctrl()
             .modify(|r, w| unsafe { w.bits(r.bits() & 0xffffe800) });
     }
     /// Deinitialize the MAC.
     fn deinit_mac(wifi: &WIFI) {
         trace!("Deinitializing MAC.");
-        wifi.ctrl().modify(|r, w| unsafe {
+        wifi.register_block().ctrl().modify(|r, w| unsafe {
             w.bits(r.bits() | 0x17ff);
             while r.bits() & 0x2000 != 0 {}
             w
@@ -533,7 +495,9 @@ impl<'res> WiFi<'res> {
     }
     fn set_rx_status(wifi: &WIFI, enabled: bool) {
         trace!("Enabling RX.");
-        wifi.rx_ctrl().write(|w| w.rx_enable().bit(enabled));
+        wifi.register_block()
+            .rx_ctrl()
+            .write(|w| w.rx_enable().bit(enabled));
     }
     fn chip_enable(wifi: &WIFI) {
         trace!("chip_enable");
@@ -542,30 +506,33 @@ impl<'res> WiFi<'res> {
     /// Initialize the WiFi peripheral.
     pub fn new<const BUFFER_COUNT: usize>(
         wifi: WIFI,
-        mut radio_clock: RADIO_CLK,
+        radio_clock: RADIO_CLK,
         _adc2: ADC2,
         dma_resources: &'res mut DMAResources<BUFFER_COUNT>,
     ) -> Self {
+        let mut radio_clock_contoller = RadioClockController::new(radio_clock);
         trace!("Initializing WiFi.");
         Self::enable_wifi_power_domain();
-        Self::enable_clock(&mut radio_clock, RadioPeripherals::Wifi);
-        Self::phy_enable(&mut radio_clock);
+        radio_clock_contoller.enable_wifi(true);
+        Self::phy_enable(&mut radio_clock_contoller);
         let start_time = Instant::now();
-        Self::reset_mac(&mut radio_clock, &wifi);
+        Self::reset_mac(&mut radio_clock_contoller, &wifi);
         Self::init_mac(&wifi);
         Self::ic_enable();
         Self::chip_enable(&wifi);
 
         let temp = Self {
             wifi,
-            radio_clock,
             current_channel: AtomicU8::new(1),
             dma_list: unsafe { dma_resources.init() },
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
         };
         MAC_SYSTEM_TIME_DELTA.store(
-            (esp_hal::time::now() - temp.mac_time()).ticks(),
+            esp_hal::time::Instant::now()
+                .duration_since_epoch()
+                .as_micros()
+                - temp.mac_time().as_micros(),
             Ordering::Relaxed,
         );
         temp.set_channel(1).unwrap();
@@ -635,7 +602,7 @@ impl<'res> WiFi<'res> {
         let length = dma_list_item.buffer().len();
         let reversed_slot = 4 - slot;
 
-        let tx_slot_config = self.wifi.tx_slot_config(reversed_slot);
+        let tx_slot_config = self.wifi.register_block().tx_slot_config(reversed_slot);
         tx_slot_config
             .config()
             .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
@@ -650,36 +617,45 @@ impl<'res> WiFi<'res> {
         });
         let rate = tx_parameters.rate;
 
-        self.wifi.plcp1(reversed_slot).write(|w| unsafe {
-            if let Some(interface) = ack_for_interface {
-                w.interface_id().bits(interface as u8)
-            } else {
-                w
-            }
-            .len()
-            .bits(length as u16)
-            .is_80211_n()
-            .bit(rate.is_ht())
-            .rate()
-            .bits(rate.into_bits())
-        });
         self.wifi
+            .register_block()
+            .plcp1(reversed_slot)
+            .write(|w| unsafe {
+                if let Some(interface) = ack_for_interface {
+                    w.interface_id().bits(interface as u8)
+                } else {
+                    w
+                }
+                .len()
+                .bits(length as u16)
+                .is_80211_n()
+                .bit(rate.is_ht())
+                .rate()
+                .bits(rate.into_bits())
+            });
+        self.wifi
+            .register_block()
             .plcp2(reversed_slot)
             .write(|w| w.unknown().bit(true));
         let duration = duration as u32;
         self.wifi
+            .register_block()
             .duration(reversed_slot)
             .write(|w| unsafe { w.bits(duration | (duration << 0x10)) });
         if rate.is_ht() {
-            self.wifi.ht_sig(reversed_slot).write(|w| unsafe {
-                w.bits(
-                    (rate.into_bits() as u32 & 0b111)
-                        | ((length as u32 & 0xffff) << 8)
-                        | (0b111 << 24)
-                        | ((rate.is_short_gi() as u32) << 31),
-                )
-            });
             self.wifi
+                .register_block()
+                .ht_sig(reversed_slot)
+                .write(|w| unsafe {
+                    w.bits(
+                        (rate.into_bits() as u32 & 0b111)
+                            | ((length as u32 & 0xffff) << 8)
+                            | (0b111 << 24)
+                            | ((rate.is_short_gi() as u32) << 31),
+                    )
+                });
+            self.wifi
+                .register_block()
                 .ht_unknown(reversed_slot)
                 .write(|w| unsafe { w.length().bits(length as u32 | 0x50000) });
         }
@@ -725,7 +701,7 @@ impl<'res> WiFi<'res> {
         };
         cancel_on_drop.wait_for_tx_complete().await?;
 
-        match self.wifi.pmd(reversed_slot).read().bits() >> 0xc {
+        match self.wifi.register_block().pmd(reversed_slot).read().bits() >> 0xc {
             1 => Err(WiFiError::RtsTimeout),
             2 => Err(WiFiError::CtsTimeout),
             5 => Err(WiFiError::AckTimeout),
@@ -862,7 +838,7 @@ impl<'res> WiFi<'res> {
         self.current_channel.load(Ordering::Relaxed)
     }
     /// Get the current MAC time.
-    pub fn mac_time(&self) -> esp_hal::time::Instant {
+    pub fn mac_time(&self) -> embassy_time::Instant {
         // We hardcode the addresses here, until PAC support is merged.
         const MAC_TIMER_ADDRESS: *const u32 = if cfg!(feature = "esp32") {
             0x3ff73c00 as *const u32
@@ -871,7 +847,7 @@ impl<'res> WiFi<'res> {
         } else {
             core::panic!()
         };
-        esp_hal::time::Instant::from_ticks(unsafe { MAC_TIMER_ADDRESS.read_volatile() } as u64)
+        embassy_time::Instant::from_micros(unsafe { MAC_TIMER_ADDRESS.read_volatile() } as u64)
     }
     /// Check if that interface is valid.
     pub const fn is_valid_interface(interface: usize) -> WiFiResult<()> {
@@ -890,6 +866,7 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
         self.wifi
+            .register_block()
             .filter_bank(bank.into_bits())
             .mask_high(interface)
             .modify(|_, w| w.enabled().bit(enabled));
@@ -903,6 +880,7 @@ impl<'res> WiFi<'res> {
     pub fn set_filter_bssid_check(&self, interface: usize, enabled: bool) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
         self.wifi
+            .register_block()
             .interface_rx_control(interface)
             .modify(|_, w| w.bssid_check().bit(enabled));
         Ok(())
@@ -914,6 +892,7 @@ impl<'res> WiFi<'res> {
     pub fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
         self.wifi
+            .register_block()
             .interface_rx_control(interface)
             .write(|w| unsafe { w.bits(val) });
         Ok(())
@@ -924,7 +903,12 @@ impl<'res> WiFi<'res> {
     /// something else than that, you probably want to use one of the other functions.
     pub fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
         Self::is_valid_interface(interface)?;
-        Ok(self.wifi.interface_rx_control(interface).read().bits())
+        Ok(self
+            .wifi
+            .register_block()
+            .interface_rx_control(interface)
+            .read()
+            .bits())
     }
     /// Set the parameters for the filter.
     pub fn set_filter(
@@ -935,7 +919,7 @@ impl<'res> WiFi<'res> {
         mask: [u8; 6],
     ) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
-        let bank = self.wifi.filter_bank(bank.into_bits());
+        let bank = self.wifi.register_block().filter_bank(bank.into_bits());
         bank.addr_low(interface)
             .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
         bank.addr_high(interface).write(|w| unsafe {
@@ -958,6 +942,7 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::is_valid_interface(interface)?;
         self.wifi
+            .register_block()
             .interface_rx_control(interface)
             .modify(|_, w| match scanning_mode {
                 ScanningMode::Disabled => {
@@ -975,9 +960,6 @@ impl<'res> WiFi<'res> {
 }
 impl Drop for WiFi<'_> {
     fn drop(&mut self) {
-        // Ensure, that the radio clocks and the power domain are disabled.
-        Self::disable_clock(&mut self.radio_clock, RadioPeripherals::Wifi);
-        Self::disable_clock(&mut self.radio_clock, RadioPeripherals::Phy);
-        Self::disable_wifi_power_domain();
+        // We don't have proper drop handling yet.
     }
 }

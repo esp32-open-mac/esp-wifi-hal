@@ -6,6 +6,7 @@ use core::{
     ops::{Deref, Range},
     pin::{pin, Pin},
     task::Poll,
+    time::Duration,
 };
 use portable_atomic::{AtomicU16, AtomicU8, Ordering};
 
@@ -303,6 +304,14 @@ impl BorrowedBuffer<'_> {
     /// The Received Signal Strength Indicator (RSSI).
     pub fn rssi(&self) -> i8 {
         self.header_buffer()[0] as i8 - 96
+    }
+    /// The time at which the packet was received in µs.
+    pub fn timestamp(&self) -> u32 {
+        u32::from_le_bytes(self.header_buffer()[12..16].try_into().unwrap())
+    }
+    /// Check if the packet is an A-MPDU.
+    pub fn aggregation(&self) -> bool {
+        check_bit!(self.header_buffer()[7], bit!(3))
     }
     /// Check if the frame is for the specified interface.
     pub fn is_frame_for_interface(&self, interface: usize) -> bool {

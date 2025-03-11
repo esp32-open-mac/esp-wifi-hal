@@ -6,9 +6,8 @@ use core::{
     ops::{Deref, Range},
     pin::{pin, Pin},
     task::Poll,
-    time::Duration,
 };
-use portable_atomic::{AtomicU16, AtomicU8, Ordering};
+use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{esp_pac::wifi::TX_SLOT_CONFIG, sync::TxSlotStatus};
 use embassy_sync::blocking_mutex::{self};
@@ -309,6 +308,13 @@ impl BorrowedBuffer<'_> {
     pub fn timestamp(&self) -> u32 {
         u32::from_le_bytes(self.header_buffer()[12..16].try_into().unwrap())
     }
+    /// The time the packet was received, corrected for the difference between MAC and system
+    /// clock.
+    pub fn corrected_timestamp(&self) -> embassy_time::Instant {
+        embassy_time::Instant::from_micros(
+            self.timestamp() as u64 + MAC_SYSTEM_TIME_DELTA.load(Ordering::Relaxed),
+        )
+    }
     /// Check if the packet is an A-MPDU.
     pub fn aggregation(&self) -> bool {
         check_bit!(self.header_buffer()[7], bit!(3))
@@ -394,6 +400,9 @@ pub enum ScanningMode {
 
 /// A [Result] returned by the Wi-Fi driver.
 pub type WiFiResult<T> = Result<T, WiFiError>;
+
+/// The time the MAC clock was enabled in microseconds.
+static MAC_SYSTEM_TIME_DELTA: AtomicU64 = AtomicU64::new(0);
 
 /// Driver for the Wi-Fi peripheral.
 pub struct WiFi<'res> {
@@ -555,6 +564,10 @@ impl<'res> WiFi<'res> {
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
         };
+        MAC_SYSTEM_TIME_DELTA.store(
+            (esp_hal::time::now() - temp.mac_time()).ticks(),
+            Ordering::Relaxed,
+        );
         temp.set_channel(1).unwrap();
         trace!(
             "WiFi MAC init complete. Took {} µs",
@@ -727,7 +740,8 @@ impl<'res> WiFi<'res> {
     /// This limitation is bypassed, by just adding 4 to the length passed to the hardware, since
     /// we're 99% sure, the hardware never reads those bytes.
     /// The reason a mutable reference is required, is because for retransmissions, we need to set
-    /// an extra bit in the FCS flags and may have to override the sequence number.
+    /// an extra bit in the FCS flags and may have to override the sequence number. This also
+    /// means, that the buffer will be different afterwards.
     ///
     /// You must set a [TxErrorBehaviour], so the driver knows what to do in case of a TX error.
     /// The advantage of using this instead of bit banging a higher layer fix is, that we don't
@@ -780,6 +794,7 @@ impl<'res> WiFi<'res> {
         // And then pin it, before passing it to hardware.
         let dma_list_item = pin!(dma_list_item);
         let dma_list_ref = dma_list_item.into_ref();
+
         let tx_attempts =
             if let TxErrorBehaviour::RetryUntil(retries) = tx_parameters.tx_error_behaviour {
                 retries + 1
@@ -787,6 +802,9 @@ impl<'res> WiFi<'res> {
                 1
             };
         let mut res = Ok(());
+        let mut transmissions = 0;
+
+        // Begin TX attempts.
         for i in 0..tx_attempts {
             // If we start retransmitting, set the retransmission flag.
             if i != 0 && !matches!(res, Err(WiFiError::TxTimeout | WiFiError::TxCollision)) {
@@ -794,7 +812,7 @@ impl<'res> WiFi<'res> {
                     *byte |= bit!(3);
                 }
                 if let Err(err) = res {
-                    debug!("Retransmitting MPDU due to error: {:?}.", err);
+                    trace!("Retransmitting MPDU due to error: {:?}.", err);
                 }
             }
             (pre_transmit_hook)(buffer);
@@ -807,8 +825,10 @@ impl<'res> WiFi<'res> {
                     *slot,
                 )
                 .await;
+            transmissions = i;
         }
-        return res.map(|_| tx_attempts);
+        // Return the last result with the amount of transmissions.
+        res.map(|_| transmissions)
     }
     /// Set the channel on which to operate.
     ///
@@ -840,6 +860,18 @@ impl<'res> WiFi<'res> {
     /// Returns the current channel.
     pub fn get_channel(&self) -> u8 {
         self.current_channel.load(Ordering::Relaxed)
+    }
+    /// Get the current MAC time.
+    pub fn mac_time(&self) -> esp_hal::time::Instant {
+        // We hardcode the addresses here, until PAC support is merged.
+        const MAC_TIMER_ADDRESS: *const u32 = if cfg!(feature = "esp32") {
+            0x3ff73c00 as *const u32
+        } else if cfg!(feature = "esp32s2") {
+            0x60035000 as *const u32
+        } else {
+            core::panic!()
+        };
+        esp_hal::time::Instant::from_ticks(unsafe { MAC_TIMER_ADDRESS.read_volatile() } as u64)
     }
     /// Check if that interface is valid.
     pub const fn is_valid_interface(interface: usize) -> WiFiResult<()> {

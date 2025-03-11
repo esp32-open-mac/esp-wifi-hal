@@ -30,7 +30,7 @@ defmt-or-log = { version = "0.2.1", default-features = false }
 defmt = { version = "0.3.10", optional = true }
 bitfield-struct = "0.10.1"
 log = { version = "0.4.26", optional = true }
-critical-section = "1.2.0"
+critical-section = { version = "1.2.0", features = ["restore-state-u32"] }
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization

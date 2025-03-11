@@ -1,10 +1,10 @@
 [package]
 name = "esp-wifi-hal"
-version = "0.1.0-alpha0"
+version = "0.1.0-alpha.0"
 authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-readme = "../README.md"
+readme = "README.md"
 description = "An experimental driver for the Wi-Fi peripheral on ESP32-series chips."
 homepage = "https://esp32-open-mac.be/"
 repository = "https://github.com/esp32-open-mac/esp-wifi-hal"

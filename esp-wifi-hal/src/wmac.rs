@@ -318,6 +318,7 @@ impl BorrowedBuffer<'_> {
         WiFi::is_valid_interface(interface).is_ok()
             && check_bit!(self.header_buffer()[3], bit!(interface + 4))
     }
+    /// Get an iterator over the interfaces, to which this frame is addressed.
     pub fn interface_iterator(&self) -> impl Iterator<Item = usize> + '_ {
         let byte = self.header_buffer()[3];
         (0..WiFi::INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
@@ -737,6 +738,22 @@ impl<'res> WiFi<'res> {
         tx_parameters: &TxParameters,
         ack_for_interface: Option<usize>,
     ) -> WiFiResult<usize> {
+        self.transmit_with_hook(buffer, tx_parameters, ack_for_interface, |_| {})
+            .await
+    }
+    /// Transmit a frame and execute the provided hook before transmission.
+    ///
+    /// This is the same as [transmit](Self::transmit), but the provided closure will be executed
+    /// right before the frame is set for transmission. This is useful for timing critical
+    /// protocols, since waiting for a TX slot takes time, which can cause data to become out
+    /// dated. The hook may be called multiple times, if a frame is retransmitted.
+    pub async fn transmit_with_hook(
+        &self,
+        buffer: &mut [u8],
+        tx_parameters: &TxParameters,
+        ack_for_interface: Option<usize>,
+        mut pre_transmit_hook: impl FnMut(&mut [u8]),
+    ) -> WiFiResult<usize> {
         let slot = self.tx_slot_queue.wait_for_slot().await;
         trace!("Acquired slot {}.", *slot);
 
@@ -763,53 +780,35 @@ impl<'res> WiFi<'res> {
         // And then pin it, before passing it to hardware.
         let dma_list_item = pin!(dma_list_item);
         let dma_list_ref = dma_list_item.into_ref();
-
-        match tx_parameters.tx_error_behaviour {
-            TxErrorBehaviour::Drop => {
-                self.transmit_internal(
+        let tx_attempts =
+            if let TxErrorBehaviour::RetryUntil(retries) = tx_parameters.tx_error_behaviour {
+                retries + 1
+            } else {
+                1
+            };
+        let mut res = Ok(());
+        for i in 0..tx_attempts {
+            // If we start retransmitting, set the retransmission flag.
+            if i != 0 && !matches!(res, Err(WiFiError::TxTimeout | WiFiError::TxCollision)) {
+                if let Some(byte) = buffer.get_mut(1) {
+                    *byte |= bit!(3);
+                }
+                if let Err(err) = res {
+                    debug!("Retransmitting MPDU due to error: {:?}.", err);
+                }
+            }
+            (pre_transmit_hook)(buffer);
+            res = self
+                .transmit_internal(
                     dma_list_ref,
                     tx_parameters,
                     ack_for_interface,
                     duration,
                     *slot,
                 )
-                .await?;
-                Ok(0)
-            }
-            TxErrorBehaviour::RetryUntil(retries) => {
-                let mut res = self
-                    .transmit_internal(
-                        dma_list_ref,
-                        tx_parameters,
-                        ack_for_interface,
-                        duration,
-                        *slot,
-                    )
-                    .await;
-                for i in 0..retries {
-                    match res {
-                        Ok(()) => return Ok(i),
-                        Err(WiFiError::TxTimeout | WiFiError::TxCollision) => {}
-                        Err(err) => {
-                            if let Some(byte) = buffer.get_mut(1) {
-                                *byte |= bit!(3);
-                            }
-                            debug!("Retransmitting MPDU due to error: {:?}.", err);
-                        }
-                    }
-                    res = self
-                        .transmit_internal(
-                            dma_list_ref,
-                            tx_parameters,
-                            ack_for_interface,
-                            duration,
-                            *slot,
-                        )
-                        .await;
-                }
-                res.map(|_| 0)
-            }
+                .await;
         }
+        return res.map(|_| tx_attempts);
     }
     /// Set the channel on which to operate.
     ///

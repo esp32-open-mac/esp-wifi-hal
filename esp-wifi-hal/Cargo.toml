@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
+readme = "../README.md"
 
 [dependencies]
 esp-wifi-sys = "0.7.0"

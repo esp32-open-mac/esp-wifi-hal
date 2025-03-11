@@ -5,6 +5,9 @@ authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 readme = "../README.md"
+description = "An experimental driver for the Wi-Fi peripheral on ESP32-series chips."
+homepage = "https://esp32-open-mac.be/"
+repository = "https://github.com/esp32-open-mac/esp-wifi-hal"
 
 [dependencies]
 esp-wifi-sys = "0.7.0"

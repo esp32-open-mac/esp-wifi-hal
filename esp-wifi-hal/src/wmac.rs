@@ -1,4 +1,3 @@
-use atomic_waker::AtomicWaker;
 use core::{
     cell::RefCell,
     future::poll_fn,
@@ -13,6 +12,7 @@ use crate::{esp_pac::wifi::TX_SLOT_CONFIG, sync::TxSlotStatus};
 use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
 use esp_hal::{
+    asynch::AtomicWaker,
     clock::RadioClockController,
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
     peripherals::{Interrupt, ADC2, LPWR, RADIO_CLK, WIFI},

@@ -3,9 +3,8 @@ use core::{
     task::Poll,
 };
 
+use esp_hal::asynch::AtomicWaker;
 use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
-
-use atomic_waker::AtomicWaker;
 
 pub enum TxSlotStatus {
     Done,

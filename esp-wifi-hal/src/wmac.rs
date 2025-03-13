@@ -778,20 +778,13 @@ impl<'res> WiFi<'res> {
                 1
             };
         let mut res = Ok(());
-        let mut transmissions = 0;
 
         // Begin TX attempts.
         for i in 0..tx_attempts {
-            // If we start retransmitting, set the retransmission flag.
-            if i != 0 && !matches!(res, Err(WiFiError::TxTimeout | WiFiError::TxCollision)) {
-                if let Some(byte) = buffer.get_mut(1) {
-                    *byte |= bit!(3);
-                }
-                if let Err(err) = res {
-                    trace!("Retransmitting MPDU due to error: {:?}.", err);
-                }
-            }
+            // Execute the pre transmit hook.
             (pre_transmit_hook)(buffer);
+
+            // Attempt transmission.
             res = self
                 .transmit_internal(
                     dma_list_ref,
@@ -801,10 +794,28 @@ impl<'res> WiFi<'res> {
                     *slot,
                 )
                 .await;
-            transmissions = i;
+
+            match res {
+                Ok(_) => return Ok(i),
+                Err(err @ (WiFiError::TxTimeout | WiFiError::TxCollision)) => {
+                    trace!(
+                        "Retransmitting MPDU due to an error while transmitting: {:?}.",
+                        err
+                    );
+                }
+                Err(err) => {
+                    if let Some(byte) = buffer.get_mut(1) {
+                        *byte |= bit!(3);
+                    }
+                    trace!(
+                        "Retransmitting MPDU due to a MAC protocol timeout: {:?}",
+                        err
+                    );
+                }
+            }
         }
         // Return the last result with the amount of transmissions.
-        res.map(|_| transmissions)
+        res.map(|_| tx_attempts)
     }
     /// Set the channel on which to operate.
     ///

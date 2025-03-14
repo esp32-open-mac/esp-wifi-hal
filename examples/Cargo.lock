@@ -213,6 +213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8370630b4dee85ab47d9087813771c5c7fe88d24fdd48649bbdfe6089da4c53a"
 dependencies = [
  "defmt-or-log-macros",
+ "log",
 ]
 
 [[package]]
@@ -668,6 +669,7 @@ dependencies = [
  "esp-wifi-sys",
  "esp32",
  "esp32s2",
+ "log",
  "macro-bits",
  "portable-atomic",
  "static_cell",
@@ -717,7 +719,6 @@ dependencies = [
  "esp-hal-embassy",
  "esp-println",
  "esp-wifi-hal",
- "fugit",
  "ieee80211",
  "log",
  "static_cell",

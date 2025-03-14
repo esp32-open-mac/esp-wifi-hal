@@ -531,11 +531,13 @@ impl<'res> WiFi<'res> {
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
         };
+        // System should always be ahead of MAC time, since the MAC timer gets started after the
+        // System timer.
         MAC_SYSTEM_TIME_DELTA.store(
             esp_hal::time::Instant::now()
                 .duration_since_epoch()
                 .as_micros()
-                - temp.mac_time().as_micros(),
+                - temp.mac_time() as u64,
             Ordering::Relaxed,
         );
         temp.set_channel(1).unwrap();
@@ -857,8 +859,8 @@ impl<'res> WiFi<'res> {
     pub fn get_channel(&self) -> u8 {
         self.current_channel.load(Ordering::Relaxed)
     }
-    /// Get the current MAC time.
-    pub fn mac_time(&self) -> embassy_time::Instant {
+    /// Get the current MAC time in µs.
+    pub fn mac_time(&self) -> u32 {
         // We hardcode the addresses here, until PAC support is merged.
         const MAC_TIMER_ADDRESS: *const u32 = if cfg!(feature = "esp32") {
             0x3ff73c00 as *const u32
@@ -867,7 +869,7 @@ impl<'res> WiFi<'res> {
         } else {
             core::panic!()
         };
-        embassy_time::Instant::from_micros(unsafe { MAC_TIMER_ADDRESS.read_volatile() } as u64)
+        unsafe { MAC_TIMER_ADDRESS.read_volatile() }
     }
     /// Check if that interface is valid.
     pub const fn is_valid_interface(interface: usize) -> WiFiResult<()> {

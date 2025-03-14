@@ -616,10 +616,8 @@ impl<'res> WiFi<'res> {
         tx_slot_config.plcp0().write(|w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)
-        });
-        // I hacked the wait for ACK bit in here, since I messed it up in the SVD.
-        tx_slot_config.plcp0().modify(|r, w| unsafe {
-            w.bits(r.bits() | 0x600000 | ((ack_for_interface.is_some() as u32) << 27) | (1 << 28))
+                .wait_for_ack()
+                .bit(ack_for_interface.is_some())
         });
         let rate = tx_parameters.rate;
 

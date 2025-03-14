@@ -331,8 +331,11 @@ impl BorrowedBuffer<'_> {
 }
 impl Drop for BorrowedBuffer<'_> {
     fn drop(&mut self) {
-        self.dma_list
-            .lock(|dma_list| dma_list.borrow_mut().recycle(self.dma_list_item));
+        self.dma_list.lock(|dma_list| {
+            let _ = dma_list
+                .try_borrow_mut()
+                .map(|mut dma_list| dma_list.recycle(self.dma_list_item));
+        });
     }
 }
 /// The bank of the rx filter.
@@ -556,10 +559,13 @@ impl<'res> WiFi<'res> {
         // We loop until we get something.
         loop {
             WIFI_RX_SIGNAL_QUEUE.next().await;
-            if let Some(current) = self
-                .dma_list
-                .lock(|dma_list| dma_list.borrow_mut().take_first())
-            {
+            if let Some(current) = self.dma_list.lock(|dma_list| {
+                dma_list
+                    .try_borrow_mut()
+                    .map(|mut dma_list| dma_list.take_first())
+                    .ok()
+                    .flatten()
+            }) {
                 trace!("Received packet. len: {}", current.buffer().len());
                 dma_list_item = current;
                 break;
@@ -597,10 +603,10 @@ impl<'res> WiFi<'res> {
         tx_parameters: &TxParameters,
         ack_for_interface: Option<usize>,
         duration: u16,
-        slot: usize,
+        slot: &BorrowedTxSlot<'_>,
     ) -> WiFiResult<()> {
         let length = dma_list_item.buffer().len();
-        let reversed_slot = 4 - slot;
+        let reversed_slot = 4 - slot.deref();
 
         let tx_slot_config = self.wifi.register_block().tx_slot_config(reversed_slot);
         tx_slot_config
@@ -661,16 +667,21 @@ impl<'res> WiFi<'res> {
         }
         // This also compensates for other slots being marked as done, without it being used at
         // all.
-        WIFI_TX_SLOTS[slot].reset();
+        WIFI_TX_SLOTS[**slot].reset();
         Self::enable_tx_slot(tx_slot_config);
-        struct CancelOnDrop<'a> {
+
+        // Since this is the first and only await point, all the transmit parameters will have been
+        // set on the first poll. If the future gets dropped after the first poll, this would leave
+        // the slot in an invalid state, so we use this construction to reset the slot in that
+        // case.
+        struct CancelOnDrop<'a, 'b> {
             tx_slot_config: &'a TX_SLOT_CONFIG,
-            slot: usize,
+            slot: &'a BorrowedTxSlot<'b>,
         }
-        impl CancelOnDrop<'_> {
+        impl CancelOnDrop<'_, '_> {
             async fn wait_for_tx_complete(self) -> WiFiResult<()> {
                 // Wait for the hardware to confirm transmission.
-                let res = WIFI_TX_SLOTS[self.slot].wait().await;
+                let res = WIFI_TX_SLOTS[**self.slot].wait().await;
                 // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
                 self.tx_slot_config.plcp0().reset();
                 let res = match res {
@@ -684,15 +695,15 @@ impl<'res> WiFi<'res> {
                     TxSlotStatus::Collision => Err(WiFiError::TxCollision),
                     TxSlotStatus::Timeout => Err(WiFiError::TxTimeout),
                 };
-                WIFI_TX_SLOTS[self.slot].reset();
+                WIFI_TX_SLOTS[**self.slot].reset();
                 forget(self);
                 res
             }
         }
-        impl Drop for CancelOnDrop<'_> {
+        impl Drop for CancelOnDrop<'_, '_> {
             fn drop(&mut self) {
                 WiFi::invalidate_tx_slot(self.tx_slot_config);
-                WIFI_TX_SLOTS[self.slot].reset();
+                WIFI_TX_SLOTS[**self.slot].reset();
             }
         }
         let cancel_on_drop = CancelOnDrop {
@@ -791,7 +802,7 @@ impl<'res> WiFi<'res> {
                     tx_parameters,
                     ack_for_interface,
                     duration,
-                    *slot,
+                    &slot,
                 )
                 .await;
 

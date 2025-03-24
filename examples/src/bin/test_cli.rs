@@ -348,10 +348,11 @@ async fn sniff_command(
         }
         let _ = write!(
             uart0_tx,
-            "Type: {:?} RSSI: {}dBm Interfaces: {:?} Address 1: {}",
+            "Type: {:?} RSSI: {}dBm Interfaces: {:?} PHY Rate: {:?} Address 1: {}",
             generic_frame.frame_control_field().frame_type(),
             received.rssi(),
             &interfaces[..if_count],
+            received.phy_rate(),
             generic_frame.address_1()
         );
         if let Some(address_2) = generic_frame.address_2() {

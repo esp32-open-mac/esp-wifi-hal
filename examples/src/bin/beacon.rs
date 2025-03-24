@@ -7,7 +7,7 @@ use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
 use esp_hal_embassy::main;
-use esp_wifi_hal::{DMAResources, RxFilterBank, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{DMAResources, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
@@ -49,13 +49,6 @@ async fn main(_spawner: Spawner) {
         dma_resources,
     );
     let module_mac_address = Efuse::read_base_mac_address();
-    let _ = wifi.set_filter(
-        esp_wifi_hal::RxFilterBank::BSSID,
-        0,
-        module_mac_address,
-        [0xff; 6],
-    );
-    let _ = wifi.set_filter_status(RxFilterBank::BSSID, 0, true);
     let module_mac_address = MACAddress::new(module_mac_address);
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));
     let mut buffer = [0u8; 300];
@@ -98,17 +91,17 @@ async fn main(_spawner: Spawner) {
             },
         };
         let written = buffer.pwrite(frame, 0).unwrap();
-        wifi.transmit(
-            &mut buffer[..written],
-            &TxParameters {
-                rate: WiFiRate::PhyRate1ML,
-                override_seq_num: true,
-                ..Default::default()
-            },
-            None,
-        )
-        .await
-        .unwrap();
+        let _ = wifi
+            .transmit(
+                &mut buffer[..written],
+                &TxParameters {
+                    rate: WiFiRate::PhyRate1ML,
+                    override_seq_num: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await;
         beacon_ticker.next().await;
     }
 }

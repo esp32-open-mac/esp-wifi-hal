@@ -56,6 +56,7 @@ extern crate defmt_or_log;
 mod dma_list;
 mod ffi;
 mod phy_init_data;
+mod rates;
 mod sync;
 mod wmac;
 
@@ -65,6 +66,7 @@ use esp32 as esp_pac;
 use esp32s2 as esp_pac;
 
 pub use dma_list::DMAResources;
+pub use rates::*;
 pub use wmac::*;
 
 #[cfg(not(feature = "critical_section"))]

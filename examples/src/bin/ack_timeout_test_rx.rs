@@ -36,6 +36,7 @@ async fn main(_spawner: Spawner) {
         peripherals.ADC2,
         dma_resources,
     );
+    let _ = wifi.set_channel(1);
     let _ = wifi.write_rx_policy_raw(0, 0);
     loop {
         let received = wifi.receive().await;

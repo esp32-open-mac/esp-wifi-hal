@@ -1,18 +1,20 @@
 use core::{
     cell::RefCell,
-    future::poll_fn,
     mem::forget,
-    ops::{Deref, Range},
+    ops::Deref,
     pin::{pin, Pin},
-    task::Poll,
 };
 use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
-use crate::{esp_pac::wifi::TX_SLOT_CONFIG, sync::TxSlotStatus};
+use crate::{
+    esp_pac::wifi::TX_SLOT_CONFIG,
+    rates::RATE_LUT,
+    sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
+    WiFiRate,
+};
 use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
 use esp_hal::{
-    asynch::AtomicWaker,
     clock::RadioClockController,
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
     peripherals::{Interrupt, ADC2, LPWR, RADIO_CLK, WIFI},
@@ -23,7 +25,7 @@ use esp_wifi_sys::include::{
     esp_phy_calibration_data_t, esp_phy_calibration_mode_t_PHY_RF_CAL_FULL, register_chipv7_phy,
     wifi_pkt_rx_ctrl_t,
 };
-use macro_bits::{bit, check_bit, serializable_enum};
+use macro_bits::{bit, check_bit};
 
 use crate::{
     dma_list::{DMAList, DMAListItem, RxDMAListItem, TxDMAListItem},
@@ -32,120 +34,6 @@ use crate::{
     sync::{SignalQueue, TxSlotStateSignal},
     DMAResources, DefaultRawMutex,
 };
-
-serializable_enum! {
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    /// The rate used by the PHY.
-    pub enum WiFiRate: u8 {
-        #[default]
-        PhyRate1ML => 0x00,
-        PhyRate2ML => 0x01,
-        PhyRate5ML => 0x02,
-        PhyRate11ML => 0x03,
-        PhyRate2MS => 0x05,
-        PhyRate5MS => 0x06,
-        PhyRate11MS => 0x07,
-        PhyRate48M => 0x08,
-        PhyRate24M => 0x09,
-        PhyRate12M => 0x0a,
-        PhyRate6M => 0x0b,
-        PhyRate54M => 0x0c,
-        PhyRate36M => 0x0d,
-        PhyRate18M => 0x0e,
-        PhyRate9M => 0x0f,
-        PhyRateMCS0LGI => 0x10,
-        PhyRateMCS1LGI => 0x11,
-        PhyRateMCS2LGI => 0x12,
-        PhyRateMCS3LGI => 0x13,
-        PhyRateMCS4LGI => 0x14,
-        PhyRateMCS5LGI => 0x15,
-        PhyRateMCS6LGI => 0x16,
-        PhyRateMCS7LGI => 0x17,
-        PhyRateMCS0SGI => 0x18,
-        PhyRateMCS1SGI => 0x19,
-        PhyRateMCS2SGI => 0x1a,
-        PhyRateMCS3SGI => 0x1b,
-        PhyRateMCS4SGI => 0x1c,
-        PhyRateMCS5SGI => 0x1d,
-        PhyRateMCS6SGI => 0x1e,
-        PhyRateMCS7SGI => 0x1f
-    }
-}
-impl WiFiRate {
-    /// Check if the rate is using the HT PHY.
-    pub const fn is_ht(&self) -> bool {
-        self.into_bits() >= 0x10
-    }
-    /// Check if the rate uses a short guard interval.
-    pub const fn is_short_gi(&self) -> bool {
-        self.into_bits() >= 0x18
-    }
-}
-
-/// This is a slot borrowed from the slot queue.
-///
-/// It is used, to make sure that access to a slot is exclusive.
-/// It will return the slot back into the slot queue once dropped.
-struct BorrowedTxSlot<'a> {
-    state: &'a blocking_mutex::Mutex<DefaultRawMutex, RefCell<u8>>,
-    slot: usize,
-}
-impl Deref for BorrowedTxSlot<'_> {
-    type Target = usize;
-    fn deref(&self) -> &Self::Target {
-        &self.slot
-    }
-}
-impl Drop for BorrowedTxSlot<'_> {
-    fn drop(&mut self) {
-        // We can ignore the result here, because we know that this slot was taken from the queue,
-        // and therefore the queue must have space for it.
-        self.state.lock(|rc| {
-            let mut state = rc.borrow_mut();
-            *state |= 1 << self.slot;
-        });
-        trace!("Slot {} is now free again.", self.slot);
-    }
-}
-/// This keeps track of all the TX slots available, by using a queue of slot numbers in the
-/// background, which makes it possible to await a slot becoming free.
-struct TxSlotQueue {
-    state: blocking_mutex::Mutex<DefaultRawMutex, RefCell<u8>>,
-    waker: AtomicWaker,
-}
-impl TxSlotQueue {
-    /// Create a new slot manager.
-    pub fn new(slots: Range<usize>) -> Self {
-        assert!(slots.end <= 5);
-        Self {
-            state: blocking_mutex::Mutex::new(RefCell::new(
-                slots.fold(0u8, |acc, bit_index| acc | (1 << bit_index)),
-            )),
-            waker: AtomicWaker::new(),
-        }
-    }
-    /// Asynchronously wait for a new slot to become available.
-    pub async fn wait_for_slot(&self) -> BorrowedTxSlot {
-        let slot = poll_fn(|cx| {
-            self.state.lock(|rc| {
-                let mut state = rc.borrow_mut();
-                let trailing_zeros = state.trailing_zeros();
-                if trailing_zeros == 8 {
-                    self.waker.register(cx.waker());
-                    Poll::Pending
-                } else {
-                    *state &= !(1 << trailing_zeros);
-                    Poll::Ready(trailing_zeros as usize)
-                }
-            })
-        })
-        .await;
-        BorrowedTxSlot {
-            state: &self.state,
-            slot,
-        }
-    }
-}
 
 static WIFI_RX_SIGNAL_QUEUE: SignalQueue = SignalQueue::new();
 
@@ -314,9 +202,25 @@ impl BorrowedBuffer<'_> {
             self.timestamp() as u64 + MAC_SYSTEM_TIME_DELTA.load(Ordering::Relaxed),
         )
     }
-    /// Check if the packet is an A-MPDU.
+    /// Check if the frame is an A-MPDU.
     pub fn aggregation(&self) -> bool {
         check_bit!(self.header_buffer()[7], bit!(3))
+    }
+    /// The phy rate, at which this frame was transmitted.
+    pub fn phy_rate(&self) -> WiFiRate {
+        let rate_and_sig_mode = self.header_buffer()[1];
+        let (rate, sig_mode) = (rate_and_sig_mode & 0x1f, rate_and_sig_mode >> 6);
+        let rate_idx = if sig_mode == 1 {
+            0x10 + (self.header_buffer()[4] & 0x7f)
+                + if self.header_buffer()[7] >> 7 == 1 {
+                    8 // Add eight for short GI rates.
+                } else {
+                    0
+                }
+        } else {
+            rate
+        };
+        RATE_LUT[rate_idx as usize]
     }
     /// Check if the frame is for the specified interface.
     pub fn is_frame_for_interface(&self, interface: usize) -> bool {
@@ -332,9 +236,7 @@ impl BorrowedBuffer<'_> {
 impl Drop for BorrowedBuffer<'_> {
     fn drop(&mut self) {
         self.dma_list.lock(|dma_list| {
-            let _ = dma_list
-                .try_borrow_mut()
-                .map(|mut dma_list| dma_list.recycle(self.dma_list_item));
+            dma_list.borrow_mut().recycle(self.dma_list_item);
         });
     }
 }
@@ -561,13 +463,10 @@ impl<'res> WiFi<'res> {
         // We loop until we get something.
         loop {
             WIFI_RX_SIGNAL_QUEUE.next().await;
-            if let Some(current) = self.dma_list.lock(|dma_list| {
-                dma_list
-                    .try_borrow_mut()
-                    .map(|mut dma_list| dma_list.take_first())
-                    .ok()
-                    .flatten()
-            }) {
+            if let Some(current) = self
+                .dma_list
+                .lock(|dma_list| dma_list.borrow_mut().take_first())
+            {
                 trace!("Received packet. len: {}", current.buffer().len());
                 dma_list_item = current;
                 break;
@@ -615,7 +514,10 @@ impl<'res> WiFi<'res> {
             .config()
             .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
 
-        tx_slot_config.plcp0().write(|w| unsafe {
+        tx_slot_config
+            .plcp0()
+            .write(|w| unsafe { w.bits(0x1000000) });
+        tx_slot_config.plcp0().modify(|_, w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)
                 .wait_for_ack()
@@ -637,7 +539,7 @@ impl<'res> WiFi<'res> {
                 .is_80211_n()
                 .bit(rate.is_ht())
                 .rate()
-                .bits(rate.into_bits())
+                .bits(rate as u8)
             });
         self.wifi
             .register_block()
@@ -654,7 +556,7 @@ impl<'res> WiFi<'res> {
                 .ht_sig(reversed_slot)
                 .write(|w| unsafe {
                     w.bits(
-                        (rate.into_bits() as u32 & 0b111)
+                        (rate as u32 & 0b111)
                             | ((length as u32 & 0xffff) << 8)
                             | (0b111 << 24)
                             | ((rate.is_short_gi() as u32) << 31),

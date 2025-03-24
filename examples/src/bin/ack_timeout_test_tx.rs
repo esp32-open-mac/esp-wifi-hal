@@ -3,19 +3,13 @@
 //! SPOILER: It does...
 #![no_std]
 #![no_main]
-use core::marker::PhantomData;
 
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use esp_wifi_hal::{DMAResources, RxFilterBank, TxParameters, WiFi};
-use ieee80211::{
-    common::{DataFrameSubtype, FCFFlags, SequenceControl},
-    data_frame::{header::DataFrameHeader, DataFrame},
-    mac_parser::MACAddress,
-    scroll::Pwrite,
-};
+use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::MACAddress, scroll::Pwrite};
 use log::info;
 
 macro_rules! mk_static {
@@ -44,6 +38,7 @@ async fn main(_spawner: Spawner) {
         peripherals.ADC2,
         dma_resources,
     );
+    let _ = wifi.set_channel(1);
     let _ = wifi.set_filter(
         RxFilterBank::ReceiverAddress,
         0,
@@ -53,22 +48,17 @@ async fn main(_spawner: Spawner) {
     let _ = wifi.set_filter_status(RxFilterBank::ReceiverAddress, 0, true);
     let _ = wifi.set_filter(RxFilterBank::BSSID, 0, *OWN_MAC_ADDRESS, [0xff; 6]);
     let _ = wifi.set_filter_status(RxFilterBank::BSSID, 0, true);
-    let mut buf = [0x00u8; 300];
+    let buf = mk_static!([u8; 300], [0x00u8; 300]);
     let written = buf
         .pwrite(
-            DataFrame {
-                header: DataFrameHeader {
-                    subtype: DataFrameSubtype::Data,
-                    fcf_flags: FCFFlags::new().with_to_ds(true),
-                    address_1: OWN_MAC_ADDRESS,
-                    address_2: OWN_MAC_ADDRESS,
-                    address_3: OTHER_MAC_ADDRESS,
-                    sequence_control: SequenceControl::new(),
-                    ..Default::default()
-                },
-                payload: Some([0x69u8].as_slice()),
-                _phantom: PhantomData,
-            },
+            DataFrameBuilder::new()
+                .from_ds()
+                .category_data()
+                .payload([0x69u8].as_slice())
+                .destination_address(OTHER_MAC_ADDRESS)
+                .source_address(OWN_MAC_ADDRESS)
+                .bssid(OWN_MAC_ADDRESS)
+                .build(),
             0,
         )
         .unwrap();
@@ -77,7 +67,7 @@ async fn main(_spawner: Spawner) {
             .transmit(
                 &mut buf[..written],
                 &TxParameters {
-                    ack_timeout: 30,
+                    ack_timeout: 10,
                     ..Default::default()
                 },
                 Some(0),

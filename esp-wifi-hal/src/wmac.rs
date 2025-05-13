@@ -105,7 +105,8 @@ extern "C" fn interrupt_handler() {
         .write(|w| unsafe { w.bits(cause) });
     if cause & 0x1000024 != 0 {
         WIFI_RX_SIGNAL_QUEUE.put();
-    } else if cause & 0x80 != 0 {
+    }
+    if cause & 0x80 != 0 {
         let mut txq_complete_status = wifi.txq_state().tx_complete_status().read().bits();
         while txq_complete_status != 0 {
             let slot = txq_complete_status.trailing_zeros();
@@ -113,7 +114,8 @@ extern "C" fn interrupt_handler() {
             // We mask away, the bit for our slot.
             txq_complete_status &= !(1 << slot);
         }
-    } else if cause & 0x80000 != 0 {
+    }
+    if cause & 0x80000 != 0 {
         // Timeout
         let mut tx_error_status = wifi
             .txq_state()
@@ -127,7 +129,8 @@ extern "C" fn interrupt_handler() {
             // We mask away, the bit for our slot.
             tx_error_status &= !(1 << slot);
         }
-    } else if cause & 0x100 != 0 {
+    }
+    if cause & 0x100 != 0 {
         // Timeout
         let mut tx_error_status = wifi
             .txq_state()

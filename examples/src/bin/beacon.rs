@@ -7,7 +7,7 @@ use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
 use esp_hal_embassy::main;
-use esp_wifi_hal::{DMAResources, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{WiFiResources, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
@@ -20,6 +20,7 @@ use ieee80211::{
     scroll::Pwrite,
     ssid, supported_rates,
 };
+use log::info;
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -40,7 +41,7 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
+    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
@@ -48,6 +49,7 @@ async fn main(_spawner: Spawner) {
         peripherals.ADC2,
         dma_resources,
     );
+    let _ = wifi.set_channel(6);
     let module_mac_address = Efuse::read_base_mac_address();
     let module_mac_address = MACAddress::new(module_mac_address);
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));
@@ -99,7 +101,7 @@ async fn main(_spawner: Spawner) {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                None,
+                None
             )
             .await;
         beacon_ticker.next().await;

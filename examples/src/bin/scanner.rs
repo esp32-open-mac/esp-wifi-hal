@@ -16,7 +16,7 @@ use embassy_time::{Duration, Ticker};
 use esp_alloc::{self as _, heap_allocator};
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{DMAResources, ScanningMode, WiFi};
+use esp_wifi_hal::{WiFiResources, ScanningMode, WiFi};
 use ieee80211::{match_frames, mgmt_frame::BeaconFrame, GenericFrame};
 use log::info;
 
@@ -52,7 +52,7 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let mut dma_resources = Box::new(DMAResources::<10>::new());
+    let mut dma_resources = Box::new(WiFiResources::<10>::new());
     let mut wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,

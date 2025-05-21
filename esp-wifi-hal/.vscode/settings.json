@@ -1,6 +1,11 @@
 {
     "rust-analyzer.check.allTargets": false,
     "rust-analyzer.cargo.target": "xtensa-esp32-none-elf",
-    "rust-analyzer.cargo.features": ["esp32"],
-    "editor.formatOnSave": true
+    "rust-analyzer.cargo.features": [
+        "esp32s2"
+    ],
+    "editor.formatOnSave": true,
+    "rust-analyzer.runnables.cargoExtraArgs": [
+        "+esp"
+    ]
 }

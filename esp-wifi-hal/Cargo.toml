@@ -31,6 +31,13 @@ defmt = { version = "1.0.1", optional = true }
 bitfield-struct = "0.11.0"
 log = { version = "0.4.26", optional = true }
 critical-section = "1.2.0"
+
+[patch.crates-io]
+esp32 = { path = "../../esp-pacs/esp32" }
+esp32s2 = { path = "../../esp-pacs/esp32s2" }
+#esp32 = { git = "https://github.com/esp32-open-mac/esp-pacs", rev = "63d58ece9badf33d6cdc0197726f2e56e734235e" }
+#esp32s2 = { git = "https://github.com/esp32-open-mac/esp-pacs", rev = "63d58ece9badf33d6cdc0197726f2e56e734235e" }
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization

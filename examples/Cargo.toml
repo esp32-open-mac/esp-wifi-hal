@@ -13,10 +13,7 @@ esp-wifi-hal = { path = "../esp-wifi-hal/", features = ["log"] }
 esp-hal = "1.0.0-beta.0"
 esp-hal-embassy = "0.7.0"
 esp-alloc = "0.6.0"
-esp-backtrace = { version = "0.15.0", features = [
-    "panic-handler",
-    "println",
-] }
+esp-backtrace = { version = "0.15.0", features = ["panic-handler", "println"] }
 esp-println = { version = "0.13.0", features = ["log"] }
 
 # Embassy dependencies
@@ -24,16 +21,32 @@ esp-println = { version = "0.13.0", features = ["log"] }
 # Misc
 log = "0.4.21"
 static_cell = { version = "2.1.0" }
-ieee80211 = "0.5.2"
+ieee80211 = { path = "../../../rust/ieee80211/" }
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
-embassy-executor = "0.7.0"
+embassy-executor = { version = "0.7.0", features = ["task-arena-size-32768"] }
 embassy-time = "0.4.0"
 embassy-sync = "0.6.2"
+rand_core = "0.9.3"
+embedded-io = "0.6.1"
+
+[patch.crates-io]
+esp32 = { path = "../../esp-pacs/esp32" }
+esp32s2 = { path = "../../esp-pacs/esp32s2" }
 
 [features]
-esp32 = ["esp-wifi-hal/esp32", "esp-hal/esp32", "esp-hal-embassy/esp32", "esp-backtrace/esp32"]
-esp32s2 = ["esp-wifi-hal/esp32s2", "esp-hal/esp32s2", "esp-hal-embassy/esp32s2", "esp-backtrace/esp32s2"]
+esp32 = [
+    "esp-wifi-hal/esp32",
+    "esp-hal/esp32",
+    "esp-hal-embassy/esp32",
+    "esp-backtrace/esp32",
+]
+esp32s2 = [
+    "esp-wifi-hal/esp32s2",
+    "esp-hal/esp32s2",
+    "esp-hal-embassy/esp32s2",
+    "esp-backtrace/esp32s2",
+]
 
 [profile.dev]
 # Rust debug is too slow.
@@ -41,7 +54,7 @@ esp32s2 = ["esp-wifi-hal/esp32s2", "esp-hal/esp32s2", "esp-hal-embassy/esp32s2",
 opt-level = "s"
 
 [profile.release]
-codegen-units = 1 # LLVM can perform better optimizations using a single thread
+codegen-units = 1        # LLVM can perform better optimizations using a single thread
 debug = 2
 debug-assertions = false
 incremental = false

@@ -3,7 +3,7 @@
 use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{DMAResources, WiFi};
+use esp_wifi_hal::{WiFiResources, WiFi};
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
@@ -12,7 +12,7 @@ async fn main(_spawner: Spawner) {
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
-    let mut dma_resources = DMAResources::<10>::new();
+    let mut dma_resources = WiFiResources::<10>::new();
     let _wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,

@@ -571,8 +571,6 @@ dependencies = [
 [[package]]
 name = "esp32"
 version = "0.36.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d9b774d7a2c96550a5c25016c2abd33370ebac60e534484b7bca344ecb8a3d6"
 dependencies = [
  "critical-section",
  "vcell",
@@ -581,8 +579,6 @@ dependencies = [
 [[package]]
 name = "esp32s2"
 version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a22733ee6f4bb08e3113df6651b2c350f37c44314017476e354ec951a55465e9"
 dependencies = [
  "critical-section",
  "vcell",

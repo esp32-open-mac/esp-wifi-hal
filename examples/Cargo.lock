@@ -65,9 +65,9 @@ dependencies = [
 
 [[package]]
 name = "bitfield-struct"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2be5a46ba01b60005ae2c51a36a29cfe134bcacae2dd5cedcd4615fbaad1494b"
+checksum = "d3ca019570363e800b05ad4fd890734f28ac7b72f563ad8a35079efb793616f8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -556,7 +556,7 @@ dependencies = [
  "nb 1.1.0",
  "paste",
  "portable-atomic",
- "rand_core",
+ "rand_core 0.6.4",
  "riscv",
  "serde",
  "strum 0.27.1",
@@ -656,9 +656,9 @@ dependencies = [
 
 [[package]]
 name = "esp-wifi-hal"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 dependencies = [
- "bitfield-struct 0.10.1",
+ "bitfield-struct 0.11.0",
  "cfg-if",
  "critical-section",
  "defmt-or-log",
@@ -687,8 +687,6 @@ dependencies = [
 [[package]]
 name = "esp32"
 version = "0.36.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d9b774d7a2c96550a5c25016c2abd33370ebac60e534484b7bca344ecb8a3d6"
 dependencies = [
  "critical-section",
  "vcell",
@@ -697,8 +695,6 @@ dependencies = [
 [[package]]
 name = "esp32s2"
 version = "0.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a22733ee6f4bb08e3113df6651b2c350f37c44314017476e354ec951a55465e9"
 dependencies = [
  "critical-section",
  "vcell",
@@ -712,6 +708,7 @@ dependencies = [
  "embassy-futures",
  "embassy-sync",
  "embassy-time",
+ "embedded-io",
  "embedded-io-async",
  "esp-alloc",
  "esp-backtrace",
@@ -721,6 +718,7 @@ dependencies = [
  "esp-wifi-hal",
  "ieee80211",
  "log",
+ "rand_core 0.9.3",
  "static_cell",
 ]
 
@@ -855,9 +853,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "ieee80211"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c870f3ba5d4f36ffdfd3df5e870cada060cf8d926584e3c3ce274f8ced22109"
+version = "0.5.5"
 dependencies = [
  "bitfield-struct 0.8.0",
  "const_soft_float",
@@ -1170,6 +1166,12 @@ name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
+name = "rand_core"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 
 [[package]]
 name = "riscv"

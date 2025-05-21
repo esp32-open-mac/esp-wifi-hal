@@ -7,7 +7,7 @@ use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
 use esp_hal_embassy::main;
-use esp_wifi_hal::{DMAResources, RxFilterBank, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{WiFiResources, RxFilterBank, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
@@ -37,7 +37,7 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
+    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,

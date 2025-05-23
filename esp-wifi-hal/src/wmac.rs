@@ -517,14 +517,17 @@ impl<'res> WiFi<'res> {
             .config()
             .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
 
+        if ack_for_interface.is_some() {
+            tx_slot_config
+                .plcp0()
+                .write(|w| unsafe { w.bits(0x01000000) });
+        }
         tx_slot_config
             .plcp0()
-            .write(|w| unsafe { w.bits(0x1000000) });
+            .write(|w| unsafe { w.bits(0x01000000) });
         tx_slot_config.plcp0().modify(|_, w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)
-                .wait_for_ack()
-                .bit(ack_for_interface.is_some())
         });
         let rate = tx_parameters.rate;
 

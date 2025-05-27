@@ -522,9 +522,6 @@ impl<'res> WiFi<'res> {
                 .plcp0()
                 .write(|w| unsafe { w.bits(0x01000000) });
         }
-        tx_slot_config
-            .plcp0()
-            .write(|w| unsafe { w.bits(0x01000000) });
         tx_slot_config.plcp0().modify(|_, w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)

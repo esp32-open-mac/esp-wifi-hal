@@ -527,7 +527,6 @@ impl<'res> WiFi<'res> {
         ack_for_interface: Option<usize>,
     ) -> WiFiResult<()> {
         let length = dma_list_item.len();
-        info!("len: {}", length);
         let reversed_slot = 4 - slot.deref();
 
         let wifi = WIFI::regs();

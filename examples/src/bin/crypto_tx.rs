@@ -11,7 +11,7 @@ use esp_wifi_hal::{
 use examples::{get_test_channel, insert_key, setup_filters, AP_ADDRESS, GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS};
 
 use ieee80211::{
-    crypto::CryptoHeader,
+    crypto::{CryptoHeader, MicState},
     data_frame::{builder::DataFrameBuilder, DataFrame},
     mac_parser::MACAddress,
     scroll::Pwrite,
@@ -67,7 +67,7 @@ async fn main(_spawner: Spawner) {
         } else {
             (PAIRWISE_TEMPLATE, PTK_KEY_SLOT)
         };
-        let frame = frame.crypto_wrap(CryptoHeader::new(pn, 0).unwrap(), false);
+        let frame = frame.crypto_wrap(CryptoHeader::new(pn, 0).unwrap(), MicState::Short);
         let mut buf = [0x00u8; 300];
         let len = buf.pwrite(frame, 0).unwrap();
         let _ = wifi

@@ -8,9 +8,9 @@ use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{WiFiResources, RxFilterBank, TxParameters, WiFi};
+use esp_wifi_hal::{WiFiResources, TxParameters, WiFi};
 use examples::{get_test_channel, setup_filters, AP_ADDRESS, STA_ADDRESS};
-use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::MACAddress, scroll::Pwrite};
+use ieee80211::{data_frame::builder::DataFrameBuilder, scroll::Pwrite};
 use log::info;
 
 macro_rules! mk_static {

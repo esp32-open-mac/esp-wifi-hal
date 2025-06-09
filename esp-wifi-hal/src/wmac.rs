@@ -911,6 +911,16 @@ impl<'res> WiFi<'res> {
                 .bit()
         })
     }
+    /// Get an iterator over the current state of all key slots.
+    ///
+    /// If the value returned by [Iterator::next] is `true`, the key slot is in use.
+    /// NOTE: The returned iterator only reflects the state, when the function was called. If you
+    /// call either [WiFi::set_key] or [WiFi::delete_key], between calling this function and
+    /// [Iterator::next], the result may no longer be accurate.
+    pub fn key_slot_state_iter(&self) -> impl Iterator<Item = bool> {
+        let key_slot_state = WIFI::regs().crypto_control().crypto_key_slot_state().read().bits();
+        (0..Self::KEY_SLOT_COUNT).map(move |i| check_bit!(key_slot_state, bit!(i)))
+    }
     /// Set a cryptographic key.
     ///
     /// This is equivalent to MLME-SETKEYS.request with one key descriptor.

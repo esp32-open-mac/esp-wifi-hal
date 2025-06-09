@@ -858,13 +858,13 @@ impl<'res> WiFi<'res> {
             .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
         bank.addr_high(interface).write(|w| unsafe {
             w.addr()
-                .bits(u16::from_le_bytes(address[4..6].try_into().unwrap()))
+                .bits(u16::from_le_bytes(address[4..].try_into().unwrap()))
         });
         bank.mask_low(interface)
             .write(|w| unsafe { w.bits(u32::from_le_bytes(mask[..4].try_into().unwrap())) });
         bank.mask_high(interface).write(|w| unsafe {
             w.mask()
-                .bits(u16::from_le_bytes(mask[4..6].try_into().unwrap()))
+                .bits(u16::from_le_bytes(mask[4..].try_into().unwrap()))
         });
         Ok(())
     }
@@ -925,6 +925,12 @@ impl<'res> WiFi<'res> {
         address: [u8; 6],
         cipher_parameters: CipherParameters<'_>,
     ) -> WiFiResult<()> {
+        // If anyone wonders about all of the asserts here, I got bored and optimized the shit out
+        // of this function. Sadly the compiler still fails to prove some other stuff.
+
+        let key = cipher_parameters.key();
+        assert!(key.len() <= 32);
+
         Self::validate_key_slot(key_slot)?;
         Self::validate_interface(interface)?;
         if key_id >= 4 {
@@ -944,7 +950,7 @@ impl<'res> WiFi<'res> {
             .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
         crypto_key_slot.addr_high().write(|w| unsafe {
             w.addr()
-                .bits(u16::from_le_bytes(address[4..6].try_into().unwrap()))
+                .bits(u16::from_le_bytes(address[4..].try_into().unwrap()))
                 .algorithm()
                 .bits(cipher_parameters.algorithm())
                 .wep_104()
@@ -968,15 +974,20 @@ impl<'res> WiFi<'res> {
         wifi.crypto_control()
             .crypto_key_slot_state()
             .modify(|_, w| w.key_slot_enable(key_slot as u8).set_bit());
+
+        let is_key_len_word_aligned = (key.len() & 0b11) == 0;
+
         // Copy the key into the slot.
-        for (i, key_chunk) in cipher_parameters.key().chunks(4).enumerate() {
+        for (i, key_chunk) in key.chunks(4).enumerate().take(8) {
             let chunk_len = key_chunk.len();
-            let key_chunk = if chunk_len == 4 {
-                key_chunk.try_into().unwrap()
-            } else {
+            assert!(chunk_len <= 4);
+
+            let key_chunk = if !is_key_len_word_aligned && chunk_len != 4 {
                 let mut temp = [0u8; 4];
                 temp[..chunk_len].copy_from_slice(key_chunk);
                 temp
+            } else {
+                key_chunk.try_into().unwrap()
             };
             crypto_key_slot
                 .key_value(i)
@@ -1058,8 +1069,14 @@ impl<'res> WiFi<'res> {
 
         let control = crypto_key_slot.addr_high().read().bits() >> 16;
 
+        #[cfg(feature = "defmt")]
         info!(
-            "Key Slot: {} Address: {:02x?} Key: {:x?} Control Reg: {:04x}",
+            "Key Slot: {} Address: {=[u8]:02x} Key: {=[u8]:02x} Control Reg: {:04x}",
+            key_slot, address, key_bytes, control
+        );
+        #[cfg(not(feature = "defmt"))]
+        info!(
+            "Key Slot: {} Address: {:02x?} Key: {:02x?} Control Reg: {:04x}",
             key_slot, address, key_bytes, control
         );
 

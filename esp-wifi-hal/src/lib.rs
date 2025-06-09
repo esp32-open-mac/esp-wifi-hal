@@ -54,6 +54,10 @@
 #[macro_use]
 extern crate defmt_or_log;
 
+// This fixes defmt_or_log messing with important macros used in const eval.
+#[macro_use]
+extern crate core;
+
 mod dma_list;
 mod ffi;
 mod phy_init_data;

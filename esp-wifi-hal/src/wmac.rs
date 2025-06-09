@@ -1069,8 +1069,14 @@ impl<'res> WiFi<'res> {
 
         let control = crypto_key_slot.addr_high().read().bits() >> 16;
 
+        #[cfg(feature = "defmt")]
         info!(
-            "Key Slot: {} Address: {:02x?} Key: {:x?} Control Reg: {:04x}",
+            "Key Slot: {} Address: {=[u8]:02x} Key: {=[u8]:02x} Control Reg: {:04x}",
+            key_slot, address, key_bytes, control
+        );
+        #[cfg(not(feature = "defmt"))]
+        info!(
+            "Key Slot: {} Address: {:02x?} Key: {:02x?} Control Reg: {:04x}",
             key_slot, address, key_bytes, control
         );
 

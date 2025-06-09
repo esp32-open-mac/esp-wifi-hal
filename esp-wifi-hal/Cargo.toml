@@ -11,15 +11,15 @@ repository = "https://github.com/esp32-open-mac/esp-wifi-hal"
 
 [dependencies]
 esp-wifi-sys = "0.7.1"
-esp-hal = { version = "1.0.0-beta.0", features = ["unstable"] }
-esp32 = { version = "0.36.0", optional = true, features = ["critical-section"] }
-esp32s2 = { version = "0.27.0", optional = true, features = [
+esp-hal = { version = "1.0.0-beta.1", features = ["unstable"] }
+esp32 = { version = "0.37.0", optional = true, features = ["critical-section"] }
+esp32s2 = { version = "0.28.0", optional = true, features = [
   "critical-section",
 ] }
 
 # Embassy dependencies
 embassy-futures = "0.1.1"
-embassy-sync = "0.6.2"
+embassy-sync = "0.7.0"
 embassy-time = "0.4.0"
 
 static_cell = { version = "2.1.0" }
@@ -31,12 +31,6 @@ defmt = { version = "1.0.1", optional = true }
 bitfield-struct = "0.11.0"
 log = { version = "0.4.26", optional = true }
 critical-section = "1.2.0"
-
-[patch.crates-io]
-esp32 = { path = "../../esp-pacs/esp32" }
-esp32s2 = { path = "../../esp-pacs/esp32s2" }
-#esp32 = { git = "https://github.com/esp32-open-mac/esp-pacs", rev = "63d58ece9badf33d6cdc0197726f2e56e734235e" }
-#esp32s2 = { git = "https://github.com/esp32-open-mac/esp-pacs", rev = "63d58ece9badf33d6cdc0197726f2e56e734235e" }
 
 [profile.dev]
 # Rust debug is too slow.
@@ -54,12 +48,7 @@ overflow-checks = false
 
 [features]
 esp32 = ["dep:esp32", "esp-hal/esp32", "esp-wifi-sys/esp32"]
-esp32s2 = [
-  "dep:esp32s2",
-  "esp-hal/esp32s2",
-  "esp-wifi-sys/esp32s2",
-  "portable-atomic/critical-section",
-]
+esp32s2 = ["dep:esp32s2", "esp-hal/esp32s2", "esp-wifi-sys/esp32s2"]
 
 defmt = ["dep:defmt", "defmt-or-log/defmt"]
 log = ["dep:log", "defmt-or-log/log"]

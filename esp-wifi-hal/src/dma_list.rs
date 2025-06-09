@@ -261,7 +261,7 @@ impl<'res> DMAList<'res> {
     }
     /// Clear the DMA list.
     ///
-    /// THis will only mark the buffers as empty, not clear them.
+    /// This will only mark the buffers as empty, not clear them.
     pub fn clear(&mut self) {
         let Some(mut current) = self
             .rx_chain_ptrs

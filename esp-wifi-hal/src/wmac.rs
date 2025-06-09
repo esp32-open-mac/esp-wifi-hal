@@ -34,7 +34,7 @@ use crate::{
     ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
     phy_init_data::PHY_INIT_DATA_DEFAULT,
     sync::{SignalQueue, TxSlotStateSignal},
-    WiFiResources, DefaultRawMutex,
+    DefaultRawMutex, WiFiResources,
 };
 
 static WIFI_RX_SIGNAL_QUEUE: SignalQueue = SignalQueue::new();
@@ -114,35 +114,72 @@ pub struct BorrowedBuffer<'res> {
     dma_descriptor: &'res mut DmaDescriptor,
 }
 impl BorrowedBuffer<'_> {
-    /// Returns the complete buffer returned by the hardware.
-    ///
-    /// This includes the header added by the hardware.
-    pub fn raw_buffer(&self) -> &[u8] {
+    const RX_CONTROL_HEADER_LENGTH: usize = size_of::<wifi_pkt_rx_ctrl_t>();
+
+    /// This returns the raw buffer, which is still padded with zeros to the nearest word boundary.
+    /// Apparently the Wi-Fi MAC only does transfers with word aligned lengths, so the remaining
+    /// bytes are filled with zeros. This buffer contains the RX control header and MPDU without
+    /// FCS or MIC.
+    fn padded_buffer(&self) -> &[u8] {
         unsafe {
             core::slice::from_raw_parts(self.dma_descriptor.buffer, self.dma_descriptor.len())
         }
     }
-    /// Same as [Self::raw_buffer], but mutable.
-    pub fn raw_buffer_mut(&mut self) -> &mut [u8] {
+    /// See [Self::padded_buffer] for docs.
+    fn padded_buffer_mut(&mut self) -> &mut [u8] {
         unsafe {
             core::slice::from_raw_parts_mut(self.dma_descriptor.buffer, self.dma_descriptor.len())
         }
     }
-    /// Returns the actual MPDU from the buffer excluding the prepended [wifi_pkt_rx_ctrl_t].
+    /// Get a pointer to the RX control header.
+    fn header_internal(&self) -> &wifi_pkt_rx_ctrl_t {
+        unsafe {
+            (self.dma_descriptor.buffer as *mut wifi_pkt_rx_ctrl_t)
+                .as_ref()
+                .unwrap()
+        }
+    }
+    /// Calculate the actual unpadded length of the buffer. We achieve this, by calculating the
+    /// delta between the length of the padded buffer and the SIG length. This is the MPDU length
+    /// specified in the PHY header and includes the FCS and MIC. Since we know, that the FCS is
+    /// always 4 bytes long and the MIC always a multiple of 4, we can then mask away all but the
+    /// lowest two bits of the delta, which gives us the amount of padding zeros. By subtracting
+    /// that from the aligned length, we get the actual length of the buffer. And all of that,
+    /// since it apparently wasn't possible to put the correct length in the DMA header...
+    /// Frostie314159: This caused me such a fucking headache.
+    fn unpadded_buffer_len(&self) -> usize {
+        let padded_zeroes = (self.header_internal().sig_len() as usize
+            + Self::RX_CONTROL_HEADER_LENGTH
+            - self.dma_descriptor.len())
+            & 0b11;
+        self.dma_descriptor.len() - padded_zeroes
+    }
+    /// Returns the raw buffer returned by the hardware.
+    ///
+    /// This includes the header added by the hardware.
+    pub fn raw_buffer(&self) -> &[u8] {
+        &self.padded_buffer()[..self.unpadded_buffer_len()]
+    }
+    /// Same as [Self::raw_buffer], but mutable.
+    pub fn raw_buffer_mut(&mut self) -> &mut [u8] {
+        let unpadded_len = self.unpadded_buffer_len();
+        &mut self.padded_buffer_mut()[..unpadded_len]
+    }
+    /// Returns the actual MPDU from the buffer excluding the prepended RX control header.
     pub fn mpdu_buffer(&self) -> &[u8] {
-        &self.raw_buffer()[size_of::<wifi_pkt_rx_ctrl_t>()..]
+        &self.raw_buffer()[Self::RX_CONTROL_HEADER_LENGTH..]
     }
     /// Same as [Self::mpdu_buffer], but mutable.
     pub fn mpdu_buffer_mut(&mut self) -> &mut [u8] {
-        &mut self.raw_buffer_mut()[size_of::<wifi_pkt_rx_ctrl_t>()..]
+        &mut self.raw_buffer_mut()[Self::RX_CONTROL_HEADER_LENGTH..]
     }
     /// Returns the header attached by the hardware.
     pub fn header_buffer(&self) -> &[u8] {
-        &self.raw_buffer()[0..size_of::<wifi_pkt_rx_ctrl_t>()]
+        &self.padded_buffer()[..Self::RX_CONTROL_HEADER_LENGTH]
     }
     /// Same as [Self::header_buffer], but mutable.
     pub fn header_buffer_mut(&mut self) -> &mut [u8] {
-        &mut self.raw_buffer_mut()[0..size_of::<wifi_pkt_rx_ctrl_t>()]
+        &mut self.padded_buffer_mut()[..Self::RX_CONTROL_HEADER_LENGTH]
     }
     /// The Received Signal Strength Indicator (RSSI).
     pub fn rssi(&self) -> i8 {
@@ -395,7 +432,6 @@ impl<'res> WiFi<'res> {
         wifi.register_block()
             .crypto_control()
             .interface_crypto_control_iter()
-            .take(2)
             .for_each(|interface_crypto_control| {
                 interface_crypto_control.write(|w| unsafe { w.bits(0x0003_0000) });
             });
@@ -407,9 +443,9 @@ impl<'res> WiFi<'res> {
     /// Initialize the WiFi peripheral.
     pub fn new<const BUFFER_COUNT: usize>(
         wifi: WIFI,
-        radio_clock: RADIO_CLK,
+        radio_clock: RADIO_CLK<'static>,
         _adc2: ADC2,
-        dma_resources: &'res mut WiFiResources<BUFFER_COUNT>,
+        wifi_resources: &'res mut WiFiResources<BUFFER_COUNT>,
     ) -> Self {
         let mut radio_clock_contoller = RadioClockController::new(radio_clock);
         trace!("Initializing WiFi.");
@@ -430,7 +466,7 @@ impl<'res> WiFi<'res> {
 
         let temp = Self {
             current_channel: AtomicU8::new(1),
-            dma_list: unsafe { dma_resources.init() },
+            dma_list: unsafe { wifi_resources.init() },
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
         };
@@ -457,6 +493,8 @@ impl<'res> WiFi<'res> {
         WIFI_RX_SIGNAL_QUEUE.reset();
     }
     /// Receive a frame.
+    ///
+    /// NOTE: The received frame will not contain an FCS or MIC.
     pub async fn receive(&self) -> BorrowedBuffer<'res> {
         // Sometimes the DMA list descriptors don't contain any data, even though the hardware indicated reception.
         // We loop until we get something.
@@ -466,8 +504,10 @@ impl<'res> WiFi<'res> {
                 .dma_list
                 .lock(|dma_list| dma_list.borrow_mut().take_first())
             {
-                trace!("Received packet. len: {}", current.len());
-                break current;
+                if current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+                    trace!("Received packet. len: {}", current.len());
+                    break current;
+                }
             }
             trace!("Received empty packet.");
         };
@@ -487,6 +527,7 @@ impl<'res> WiFi<'res> {
         ack_for_interface: Option<usize>,
     ) -> WiFiResult<()> {
         let length = dma_list_item.len();
+        info!("len: {}", length);
         let reversed_slot = 4 - slot.deref();
 
         let wifi = WIFI::regs();
@@ -656,11 +697,11 @@ impl<'res> WiFi<'res> {
         }
 
         // We initialize and pin the DMA descriptor.
-        let len = buffer.len() + 4;
-        let mut dma_descriptor = pin!(DmaDescriptor::EMPTY);
+        let length = buffer.len() + 4;
+        let mut dma_descriptor: Pin<&mut DmaDescriptor> = pin!(DmaDescriptor::EMPTY);
         dma_descriptor.set_owner(Owner::Dma);
-        dma_descriptor.set_size(len);
-        dma_descriptor.set_length(len);
+        dma_descriptor.set_size(length);
+        dma_descriptor.set_length(length);
         dma_descriptor.set_suc_eof(true);
         dma_descriptor.buffer = buffer.as_ptr() as *mut u8;
 
@@ -689,6 +730,9 @@ impl<'res> WiFi<'res> {
                     ack_for_interface,
                 )
                 .await;
+            if tx_parameters.tx_error_behaviour == TxErrorBehaviour::Drop {
+                break;
+            }
 
             match res {
                 Ok(_) => return Ok(i),
@@ -910,10 +954,12 @@ impl<'res> WiFi<'res> {
                 .bit(cipher_parameters.is_wep_104())
                 .bits_256()
                 .bit(cipher_parameters.is_256_bit_key())
+                // FIXME: I know this is a pretty fugly fix, but until we get another PAC update, which
+                // will take forever, we're stuck with it.
                 .group_key()
-                .bit(cipher_parameters.is_group())
-                .pairwise_key()
                 .bit(cipher_parameters.is_pairwise())
+                .pairwise_key()
+                .bit(cipher_parameters.is_group())
                 .unknown()
                 .set_bit()
                 .interface_id()
@@ -922,6 +968,9 @@ impl<'res> WiFi<'res> {
                 .bits(key_id)
         });
 
+        wifi.crypto_control()
+            .crypto_key_slot_state()
+            .modify(|_, w| w.key_slot_enable(key_slot as u8).set_bit());
         // Copy the key into the slot.
         for (i, key_chunk) in cipher_parameters.key().chunks(4).enumerate() {
             let chunk_len = key_chunk.len();
@@ -941,9 +990,8 @@ impl<'res> WiFi<'res> {
             .modify(|r, w| unsafe { w.bits(r.bits() & 0xff0000ff) });
         wifi.crypto_control()
             .interface_crypto_control(interface)
-            .modify(|r, w| unsafe {
-                w.bits(r.bits() | 0x10103)
-                    .spp_enable()
+            .modify(|_, w| {
+                w.spp_enable()
                     .bit(cipher_parameters.is_spp_enabled())
                     .pmf_disable()
                     .bit(!cipher_parameters.is_mfp_enabled())
@@ -953,8 +1001,8 @@ impl<'res> WiFi<'res> {
                     .bit(cipher_parameters.is_aead())
             });
         wifi.crypto_control()
-            .crypto_key_slot_state()
-            .modify(|_, w| w.key_slot_enable(key_slot as u8).set_bit());
+            .interface_crypto_control(interface)
+            .modify(|r, w| unsafe { w.bits(r.bits() | 0x10103 & 0x3fff_ffff) });
 
         Ok(())
     }
@@ -977,6 +1025,82 @@ impl<'res> WiFi<'res> {
             .for_each(|key_value| key_value.reset());
 
         Ok(())
+    }
+    /// Dump the entire contents of a key slot.
+    pub fn dump_key_slot(&self, key_slot: usize) -> WiFiResult<()> {
+        Self::validate_key_slot(key_slot)?;
+
+        let wifi = WIFI::regs();
+        let crypto_key_slot = wifi.crypto_key_slot(key_slot);
+
+        let mut key_bytes = [0x00u8; 32];
+        for (buffer_chunk, key_word) in key_bytes
+            .chunks_mut(4)
+            .zip(crypto_key_slot.key_value_iter())
+        {
+            buffer_chunk.copy_from_slice(key_word.read().bits().to_le_bytes().as_slice());
+        }
+        let mut address = [0x00u8; 6];
+        address[..4].copy_from_slice(
+            crypto_key_slot
+                .addr_low()
+                .read()
+                .bits()
+                .to_le_bytes()
+                .as_slice(),
+        );
+        address[4..].copy_from_slice(
+            crypto_key_slot
+                .addr_high()
+                .read()
+                .addr()
+                .bits()
+                .to_le_bytes()
+                .as_slice(),
+        );
+
+        let control = crypto_key_slot.addr_high().read().bits() >> 16;
+
+        info!(
+            "Key Slot: {} Address: {:02x?} Key: {:x?} Control Reg: {:04x}",
+            key_slot, address, key_bytes, control
+        );
+
+        Ok(())
+    }
+    /// Dump the values of the crypto control registers.
+    pub fn dump_crypto_config(&self) {
+        let wifi = WIFI::regs();
+        for (i, interface_crypto_control) in wifi
+            .crypto_control()
+            .interface_crypto_control_iter()
+            .enumerate()
+        {
+            info!(
+                "Interface: {} Crypto Control Reg: {:08x}",
+                i,
+                interface_crypto_control.read().bits()
+            );
+        }
+        info!(
+            "General Crypto Control Reg: {:08x}",
+            wifi.crypto_control().general_crypto_control().read().bits()
+        );
+        let mut enabled_key_slots = [0x00u8; 32];
+        let enabled_slot_count = wifi
+            .crypto_control()
+            .crypto_key_slot_state()
+            .read()
+            .key_slot_enable_iter()
+            .enumerate()
+            .filter_map(|(i, enabled)| enabled.bit().then_some(i))
+            .zip(enabled_key_slots.iter_mut())
+            .map(|(key_slot, k)| *k = key_slot as u8)
+            .count();
+        info!(
+            "Enabled Key Slots: {:?}",
+            &enabled_key_slots[..enabled_slot_count]
+        );
     }
 }
 impl Drop for WiFi<'_> {

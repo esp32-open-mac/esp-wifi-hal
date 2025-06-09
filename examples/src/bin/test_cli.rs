@@ -485,7 +485,7 @@ fn find_last_codepoint(bytes: &[u8]) -> usize {
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    heap_allocator!(32 * 1024);
+    heap_allocator!(size: 32 * 1024);
     esp_println::logger::init_logger_from_env();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -506,12 +506,12 @@ async fn main(_spawner: Spawner) {
     .into_async()
     .split();
 
-    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
     let _ = uart0_tx.flush_async().await;
     let _ = writeln!(&mut uart0_tx, "READY");

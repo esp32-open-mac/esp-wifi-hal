@@ -6,6 +6,7 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use esp_wifi_hal::{WiFiResources, TxParameters, WiFi};
+use examples::get_test_channel;
 use ieee80211::{mac_parser::MACAddress, GenericFrame};
 use log::info;
 
@@ -27,15 +28,15 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
-    let _ = wifi.set_channel(1);
+    let _ = wifi.set_channel(get_test_channel());
     let _ = wifi.write_rx_policy_raw(0, 0);
     loop {
         let received = wifi.receive().await;

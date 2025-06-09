@@ -37,13 +37,13 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
     let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);

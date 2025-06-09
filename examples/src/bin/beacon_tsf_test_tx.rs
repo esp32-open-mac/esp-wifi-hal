@@ -5,14 +5,15 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
-use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
+use esp_hal::timer::timg::TimerGroup;
 use esp_hal_embassy::main;
 use esp_wifi_hal::{WiFiResources, RxFilterBank, TxParameters, WiFi, WiFiRate};
+use examples::{setup_filters, AP_ADDRESS};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
     elements::VendorSpecificElement,
-    mac_parser::{MACAddress, BROADCAST},
+    mac_parser::BROADCAST,
     mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
     scroll::Pwrite,
     ssid,
@@ -37,15 +38,14 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
-    let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));
     let mut buffer = [0u8; 300];
     unsafe {
@@ -54,19 +54,14 @@ async fn main(_spawner: Spawner) {
     }
     loop {
         for interface in 0..4 {
-            let _ = wifi.set_filter(
-                esp_wifi_hal::RxFilterBank::BSSID,
-                interface,
-                *module_mac_address,
-                [0xff; 6],
-            );
-            let _ = wifi.set_filter_status(RxFilterBank::BSSID, interface, true);
+            setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
+
             let vendor_body = [interface as u8];
             let frame = BeaconFrame {
                 header: ManagementFrameHeader {
                     receiver_address: BROADCAST,
-                    transmitter_address: module_mac_address,
-                    bssid: module_mac_address,
+                    transmitter_address: AP_ADDRESS.into(),
+                    bssid: AP_ADDRESS.into(),
                     sequence_control: SequenceControl::new(),
                     ..Default::default()
                 },

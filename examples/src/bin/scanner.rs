@@ -16,7 +16,7 @@ use embassy_time::{Duration, Ticker};
 use esp_alloc::{self as _, heap_allocator};
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{DMAResources, ScanningMode, WiFi};
+use esp_wifi_hal::{WiFiResources, ScanningMode, WiFi};
 use ieee80211::{match_frames, mgmt_frame::BeaconFrame, GenericFrame};
 use log::info;
 
@@ -46,18 +46,18 @@ async fn scan_on_channel(wifi: &mut WiFi<'_>, known_ssids: &mut BTreeSet<String>
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    heap_allocator!(64 * 1024);
+    heap_allocator!(size: 64 * 1024);
     esp_println::logger::init_logger_from_env();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let mut dma_resources = Box::new(DMAResources::<10>::new());
+    let mut wifi_resources = Box::new(WiFiResources::<10>::new());
     let mut wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources.as_mut(),
+        wifi_resources.as_mut(),
     );
     let _ = wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);
     let mut known_ssids = BTreeSet::new();

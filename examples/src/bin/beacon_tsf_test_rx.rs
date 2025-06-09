@@ -6,7 +6,7 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
-use esp_wifi_hal::{DMAResources, ScanningMode, WiFi};
+use esp_wifi_hal::{WiFiResources, ScanningMode, WiFi};
 use ieee80211::{
     elements::VendorSpecificElement,
     mgmt_frame::{body::HasElements, BeaconFrame},
@@ -30,13 +30,13 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
     let _ = wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);
     let mut non_zero_timestamps = false;

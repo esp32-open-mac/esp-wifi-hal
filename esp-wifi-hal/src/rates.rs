@@ -1,5 +1,6 @@
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Physical layer mode.
 pub enum PhyMode {
     /// Direct-Sequence-Spread-Spectrum (DSSS)
     ///
@@ -28,6 +29,7 @@ pub enum PhyMode {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
+#[allow(missing_docs)]
 /// The rate used by the PHY.
 pub enum WiFiRate {
     #[default]

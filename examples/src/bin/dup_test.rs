@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
-use esp_wifi_hal::{DMAResources, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{WiFiResources, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
     element_chain,
@@ -37,13 +37,13 @@ async fn main(_spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
 
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
     let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);

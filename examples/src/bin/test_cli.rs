@@ -19,7 +19,7 @@ use esp_hal::{
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{DMAResources, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{WiFiResources, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
     element_chain,
@@ -57,7 +57,7 @@ async fn wait_for_quit(uart_rx: &mut UartRx<'_, Async>) {
 }
 fn channel_cmd<'a>(
     wifi: &WiFi,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     match args.next() {
@@ -95,7 +95,7 @@ fn channel_cmd<'a>(
 }
 async fn scan_on_channel(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     known_aps: &mut BTreeSet<String>,
 ) {
     loop {
@@ -120,7 +120,7 @@ async fn scan_on_channel(
 }
 async fn scan_command<'a>(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let scanning_mode = match args.next() {
@@ -160,7 +160,7 @@ async fn scan_command<'a>(
 }
 async fn beacon_command<'a>(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let Some(ssid) = args.next() else {
@@ -242,7 +242,7 @@ async fn beacon_command<'a>(
         beacon_interval.next().await;
     }
 }
-fn dump_command(wifi: &WiFi, uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write)) {
+fn dump_command(wifi: &WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let _ = writeln!(uart0_tx, "Current channel: {}", wifi.get_channel());
 }
 fn parse_mac(mac_str: &str) -> Option<MACAddress> {
@@ -257,10 +257,10 @@ fn parse_mac(mac_str: &str) -> Option<MACAddress> {
 }
 fn parse_interface(
     interface: Option<&str>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
 ) -> Option<usize> {
     match interface.map(str::parse::<usize>) {
-        Some(Ok(interface)) if WiFi::is_valid_interface(interface).is_ok() => Some(interface),
+        Some(Ok(interface)) if WiFi::validate_interface(interface).is_ok() => Some(interface),
         _ => {
             let _ = writeln!(
                 uart0_tx,
@@ -273,7 +273,7 @@ fn parse_interface(
 }
 fn filter_command<'a>(
     wifi: &WiFi,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let bank = match args.next() {
@@ -324,7 +324,7 @@ fn filter_command<'a>(
 }
 async fn sniff_command(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
 ) {
     wifi.clear_rx_queue();
     loop {
@@ -370,7 +370,7 @@ async fn sniff_command(
 }
 fn scanning_mode_command<'a>(
     wifi: &WiFi,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let Some(interface) = parse_interface(args.next(), uart0_tx) else {
@@ -393,7 +393,7 @@ fn scanning_mode_command<'a>(
 }
 async fn s_pol_command<'a>(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let Some(interface) = args.next() else {
@@ -404,7 +404,7 @@ async fn s_pol_command<'a>(
         let _ = writeln!(uart0_tx, "Couldn't parse interface.");
         return;
     };
-    if WiFi::is_valid_interface(interface).is_err() {
+    if WiFi::validate_interface(interface).is_err() {
         let _ = writeln!(uart0_tx, "Invalid interface.");
         return;
     }
@@ -426,7 +426,7 @@ async fn s_pol_command<'a>(
 }
 async fn run_command<'a>(
     wifi: &WiFi<'_>,
-    uart0_tx: &mut (impl core::fmt::Write + embedded_io_async::Write),
+    uart0_tx: &mut impl embedded_io::Write,
     command: &str,
     args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -485,7 +485,7 @@ fn find_last_codepoint(bytes: &[u8]) -> usize {
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    heap_allocator!(32 * 1024);
+    heap_allocator!(size: 32 * 1024);
     esp_println::logger::init_logger_from_env();
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
@@ -506,12 +506,12 @@ async fn main(_spawner: Spawner) {
     .into_async()
     .split();
 
-    let dma_resources = mk_static!(DMAResources<10>, DMAResources::new());
+    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
     let wifi = WiFi::new(
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        dma_resources,
+        wifi_resources,
     );
     let _ = uart0_tx.flush_async().await;
     let _ = writeln!(&mut uart0_tx, "READY");

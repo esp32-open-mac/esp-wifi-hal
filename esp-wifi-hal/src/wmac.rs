@@ -540,8 +540,6 @@ impl<'res> WiFi<'res> {
         tx_slot_config.plcp0().modify(|_, w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)
-                .wait_for_ack()
-                .bit(ack_for_interface.is_some())
         });
 
         let rate = tx_parameters.rate;

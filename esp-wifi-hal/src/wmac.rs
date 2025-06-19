@@ -139,26 +139,30 @@ impl BorrowedBuffer<'_> {
                 .unwrap()
         }
     }
-    /// Calculate the actual unpadded length of the buffer. We achieve this, by calculating the
-    /// delta between the length of the padded buffer and the SIG length. This is the MPDU length
-    /// specified in the PHY header and includes the FCS and MIC. Since we know, that the FCS is
-    /// always 4 bytes long and the MIC always a multiple of 4, we can then mask away all but the
-    /// lowest two bits of the delta, which gives us the amount of padding zeros. By subtracting
-    /// that from the aligned length, we get the actual length of the buffer. And all of that,
-    /// since it apparently wasn't possible to put the correct length in the DMA header...
+    /// Calculate the length of the trailer.
+    ///
+    /// This includes MIC and FCS, which are conveniently all a multiple of 32 bits in length.
+    /// And all of that, since it apparently wasn't possible to put the correct length in the DMA
+    /// descriptor...
     /// Frostie314159: This caused me such a fucking headache.
-    fn unpadded_buffer_len(&self) -> usize {
-        let padded_zeroes = (self.header_internal().sig_len() as usize
-            + Self::RX_CONTROL_HEADER_LENGTH
+    fn trailer_length(&self) -> usize {
+        ((self.header_internal().sig_len() as usize + Self::RX_CONTROL_HEADER_LENGTH
             - self.dma_descriptor.len())
-            & 0b11;
-        self.dma_descriptor.len() - padded_zeroes
+            & !0b11)
+            + 4
+    }
+    /// Calculate the actual unpadded length of the buffer.
+    fn unpadded_buffer_len(&self) -> usize {
+        self.header_internal().sig_len() as usize - self.trailer_length()
+            + Self::RX_CONTROL_HEADER_LENGTH
     }
     /// Returns the raw buffer returned by the hardware.
     ///
     /// This includes the header added by the hardware.
     pub fn raw_buffer(&self) -> &[u8] {
-        &self.padded_buffer()[..self.unpadded_buffer_len()]
+        self.padded_buffer().get(..self.unpadded_buffer_len()).unwrap_or_else(|| {
+           defmt_or_log::panic!("{}", self.unpadded_buffer_len());
+        })
     }
     /// Same as [Self::raw_buffer], but mutable.
     pub fn raw_buffer_mut(&mut self) -> &mut [u8] {
@@ -539,6 +543,8 @@ impl<'res> WiFi<'res> {
         tx_slot_config.plcp0().modify(|_, w| unsafe {
             w.dma_addr()
                 .bits(dma_list_item.get_ref() as *const _ as u32)
+                .wait_for_ack()
+                .bit(ack_for_interface.is_some())
         });
 
         let rate = tx_parameters.rate;
@@ -918,7 +924,11 @@ impl<'res> WiFi<'res> {
     /// call either [WiFi::set_key] or [WiFi::delete_key], between calling this function and
     /// [Iterator::next], the result may no longer be accurate.
     pub fn key_slot_state_iter(&self) -> impl Iterator<Item = bool> {
-        let key_slot_state = WIFI::regs().crypto_control().crypto_key_slot_state().read().bits();
+        let key_slot_state = WIFI::regs()
+            .crypto_control()
+            .crypto_key_slot_state()
+            .read()
+            .bits();
         (0..Self::KEY_SLOT_COUNT).map(move |i| check_bit!(key_slot_state, bit!(i)))
     }
     /// Set a cryptographic key.

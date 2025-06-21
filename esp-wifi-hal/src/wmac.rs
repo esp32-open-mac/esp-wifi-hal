@@ -146,22 +146,20 @@ impl BorrowedBuffer<'_> {
     /// descriptor...
     /// Frostie314159: This caused me such a fucking headache.
     fn trailer_length(&self) -> usize {
-        ((self.header_internal().sig_len() as usize + Self::RX_CONTROL_HEADER_LENGTH
-            - self.dma_descriptor.len())
-            & !0b11)
-            + 4
+        let padded_len = self.dma_descriptor.len() - Self::RX_CONTROL_HEADER_LENGTH;
+        let delta = self.header_internal().sig_len() as usize - padded_len;
+        delta.div_ceil(4) * 4
     }
     /// Calculate the actual unpadded length of the buffer.
     fn unpadded_buffer_len(&self) -> usize {
-        self.header_internal().sig_len() as usize - self.trailer_length()
-            + Self::RX_CONTROL_HEADER_LENGTH
+        self.header_internal().sig_len() as usize - self.trailer_length() + Self::RX_CONTROL_HEADER_LENGTH
     }
     /// Returns the raw buffer returned by the hardware.
     ///
     /// This includes the header added by the hardware.
     pub fn raw_buffer(&self) -> &[u8] {
         self.padded_buffer().get(..self.unpadded_buffer_len()).unwrap_or_else(|| {
-           defmt_or_log::panic!("{}", self.unpadded_buffer_len());
+           defmt_or_log::panic!("Corrected len: {} Padded len: {} SIG len: {}", self.unpadded_buffer_len(), self.dma_descriptor.len(), self.header_internal().sig_len());
         })
     }
     /// Same as [Self::raw_buffer], but mutable.

@@ -7,7 +7,7 @@ use core::{
 };
 
 use embassy_sync::blocking_mutex;
-use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags};
+use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
 use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 
 // Required to fix compile error for bitfield.
@@ -179,6 +179,7 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
                 };
                 descriptor.reset_for_rx();
                 descriptor.set_size(RX_BUFFER_SIZE);
+                descriptor.set_owner(Owner::Dma);
 
                 let descriptor_ref = dma_descriptor.write(descriptor);
 
@@ -246,13 +247,13 @@ impl<'res> DMAList<'res> {
     pub fn take_first(&mut self) -> Option<&'res mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
         trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
-        if first.flags.suc_eof() && first.flags.length() as usize >= size_of::<wifi_pkt_rx_ctrl_t>()
-        {
+        if first.flags.suc_eof() && first.len() >= size_of::<wifi_pkt_rx_ctrl_t>() {
             let next = first.next();
             if next.is_none() {
                 trace!("Next was none.");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
+            first.set_owner(Owner::Cpu);
 
             Some(first)
         } else {

@@ -5,10 +5,9 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
 use esp_hal_embassy::main;
-use esp_wifi_hal::{WiFiResources, RxFilterBank, TxParameters, WiFi, WiFiRate};
-use examples::{setup_filters, AP_ADDRESS};
+use esp_wifi_hal::{RxFilterBank, TxParameters, WiFiRate};
+use examples::{common_init, embassy_init, setup_filters, wifi_init, AP_ADDRESS};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
@@ -19,33 +18,14 @@ use ieee80211::{
     ssid,
 };
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 const SSID: &str = "BEACON TSF HIL TEST";
 
 #[main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));
     let mut buffer = [0u8; 300];
     unsafe {

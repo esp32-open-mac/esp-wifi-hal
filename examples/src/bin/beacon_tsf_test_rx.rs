@@ -4,40 +4,22 @@
 #![no_main]
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
 use esp_println::println;
-use esp_wifi_hal::{WiFiResources, ScanningMode, WiFi};
+use esp_wifi_hal::ScanningMode;
+use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     elements::VendorSpecificElement,
     mgmt_frame::{body::HasElements, BeaconFrame},
     scroll::Pread,
 };
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 const SSID: &str = "BEACON TSF HIL TEST";
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let _ = wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);
     let mut non_zero_timestamps = false;
     loop {

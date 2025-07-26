@@ -5,9 +5,10 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
-use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
+use esp_hal::efuse::Efuse;
 use esp_hal_embassy::main;
-use esp_wifi_hal::{WiFiResources, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{TxParameters, WiFiRate};
+use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
@@ -21,33 +22,14 @@ use ieee80211::{
     ssid, supported_rates,
 };
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 const SSID: &str = "The cake is a lie.";
 
 #[main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let _ = wifi.set_channel(6);
     let module_mac_address = Efuse::read_base_mac_address();
     let module_mac_address = MACAddress::new(module_mac_address);
@@ -100,7 +82,7 @@ async fn main(_spawner: Spawner) {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                None
+                None,
             )
             .await;
         beacon_ticker.next().await;

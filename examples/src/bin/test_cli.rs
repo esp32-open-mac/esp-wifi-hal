@@ -15,11 +15,11 @@ use embassy_time::{Duration, Instant, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
     efuse::Efuse,
-    timer::timg::TimerGroup,
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{WiFiResources, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
     element_chain,
@@ -36,14 +36,6 @@ use ieee80211::{
 extern crate alloc;
 use esp_alloc::{self as _, heap_allocator};
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 const QUIT_SIGNAL: u8 = b'q';
 
 async fn wait_for_quit(uart_rx: &mut UartRx<'_, Async>) {
@@ -209,7 +201,7 @@ async fn beacon_command<'a>(
                         18
                     ],
                 DSSSParameterSetElement {
-                    current_channel: 1
+                    current_channel: channel_number,
                 },
                 TIMElement {
                     dtim_count: 1,
@@ -223,15 +215,16 @@ async fn beacon_command<'a>(
     };
     let start_timestamp = Instant::now();
     let mut beacon_interval = Ticker::every(Duration::from_micros(100 * TU.as_micros() as u64));
-    loop {
+    for i in 0.. {
         let mut buf = [0x00; 200];
         beacon_template.body.timestamp = start_timestamp.elapsed().as_micros();
+        beacon_template.elements.next.next.next.inner.dtim_count = i % 2;
         let written = buf.pwrite(beacon_template, 0).unwrap();
         let _ = wifi
             .transmit(
                 &mut buf[..written],
                 &TxParameters {
-                    rate: WiFiRate::PhyRateMCS0LGI,
+                    rate: WiFiRate::PhyRate1ML,
                     override_seq_num: true,
                     ..Default::default()
                 },
@@ -322,10 +315,7 @@ fn filter_command<'a>(
         }
     }
 }
-async fn sniff_command(
-    wifi: &WiFi<'_>,
-    uart0_tx: &mut impl embedded_io::Write,
-) {
+async fn sniff_command(wifi: &WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) {
     wifi.clear_rx_queue();
     loop {
         let received = wifi.receive().await;
@@ -484,12 +474,11 @@ fn find_last_codepoint(bytes: &[u8]) -> usize {
 */
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
     heap_allocator!(size: 32 * 1024);
-    esp_println::logger::init_logger_from_env();
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
     #[cfg(feature = "esp32")]
     let (rx_pin, tx_pin) = (peripherals.GPIO3, peripherals.GPIO1);
@@ -506,13 +495,6 @@ async fn main(_spawner: Spawner) {
     .into_async()
     .split();
 
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let _ = uart0_tx.flush_async().await;
     let _ = writeln!(&mut uart0_tx, "READY");
     loop {

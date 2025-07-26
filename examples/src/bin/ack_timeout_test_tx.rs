@@ -7,9 +7,10 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{WiFiResources, TxParameters, WiFi};
-use examples::{get_test_channel, setup_filters, AP_ADDRESS, STA_ADDRESS};
+use esp_wifi_hal::TxParameters;
+use examples::{
+    common_init, embassy_init, get_test_channel, setup_filters, wifi_init, AP_ADDRESS, STA_ADDRESS,
+};
 use ieee80211::{data_frame::builder::DataFrameBuilder, scroll::Pwrite};
 use log::info;
 
@@ -23,20 +24,10 @@ macro_rules! mk_static {
 }
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let _ = wifi.set_channel(get_test_channel());
     setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
 
@@ -62,11 +53,11 @@ async fn main(_spawner: Spawner) {
                     ack_timeout: 10,
                     ..Default::default()
                 },
-                Some(0)
+                Some(0),
             )
             .await;
         if let Err(err) = res {
-            info!("TX error: {:?}", err);
+            info!("TX error: {err:?}");
         } else {
             info!("Ack arrived in time.");
         }

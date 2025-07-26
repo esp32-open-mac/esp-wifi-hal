@@ -3,12 +3,11 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_hal::timer::timg::TimerGroup;
-use esp_wifi_hal::{
-    WiFiResources, KeyType, 
-    TxErrorBehaviour, TxParameters, WiFi,
+use esp_wifi_hal::{KeyType, TxErrorBehaviour, TxParameters};
+use examples::{
+    common_init, embassy_init, get_test_channel, insert_key, setup_filters, wifi_init, AP_ADDRESS,
+    GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS,
 };
-use examples::{get_test_channel, insert_key, setup_filters, AP_ADDRESS, GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS};
 
 use ieee80211::{
     crypto::{CryptoHeader, MicState},
@@ -16,8 +15,6 @@ use ieee80211::{
     mac_parser::MACAddress,
     scroll::Pwrite,
 };
-use static_cell::StaticCell;
-
 
 const PAYLOAD: &[u8] = &[0x69; 2];
 
@@ -38,23 +35,12 @@ const PAIRWISE_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::new()
     .bssid(MACAddress(AP_ADDRESS))
     .build();
 
-static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();
-
-
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-    let dma_resources = WIFI_RESOURCES.init(WiFiResources::new());
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        dma_resources,
-    );
     let _ = wifi.set_channel(get_test_channel());
     setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
 

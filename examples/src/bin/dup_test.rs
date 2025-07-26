@@ -5,8 +5,9 @@ use core::marker::PhantomData;
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::{efuse::Efuse, timer::timg::TimerGroup};
-use esp_wifi_hal::{WiFiResources, TxParameters, WiFi, WiFiRate};
+use esp_hal::efuse::Efuse;
+use esp_wifi_hal::{TxParameters, WiFiRate};
+use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
     element_chain,
@@ -31,20 +32,10 @@ macro_rules! mk_static {
 
 #[esp_hal_embassy::main]
 async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
+    let peripherals = common_init();
+    embassy_init(peripherals.TIMG0);
+    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
-
-    let wifi_resources = mk_static!(WiFiResources<10>, WiFiResources::new());
-
-    let wifi = WiFi::new(
-        peripherals.WIFI,
-        peripherals.RADIO_CLK,
-        peripherals.ADC2,
-        wifi_resources,
-    );
     let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);
     let mut seq_num = 0;

@@ -16,10 +16,10 @@ use crate::{
 use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
 use esp_hal::{
-    clock::RadioClockController,
+    clock::{ModemClockController, PhyClockGuard},
     dma::{DmaDescriptor, Owner},
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
-    peripherals::{Interrupt, ADC2, LPWR, RADIO_CLK, WIFI},
+    peripherals::{Interrupt, ADC2, LPWR, WIFI},
     ram,
     system::Cpu,
 };
@@ -152,15 +152,23 @@ impl BorrowedBuffer<'_> {
     }
     /// Calculate the actual unpadded length of the buffer.
     fn unpadded_buffer_len(&self) -> usize {
-        self.header_internal().sig_len() as usize - self.trailer_length() + Self::RX_CONTROL_HEADER_LENGTH
+        self.header_internal().sig_len() as usize - self.trailer_length()
+            + Self::RX_CONTROL_HEADER_LENGTH
     }
     /// Returns the raw buffer returned by the hardware.
     ///
     /// This includes the header added by the hardware.
     pub fn raw_buffer(&self) -> &[u8] {
-        self.padded_buffer().get(..self.unpadded_buffer_len()).unwrap_or_else(|| {
-           defmt_or_log::panic!("Corrected len: {} Padded len: {} SIG len: {}", self.unpadded_buffer_len(), self.dma_descriptor.len(), self.header_internal().sig_len());
-        })
+        self.padded_buffer()
+            .get(..self.unpadded_buffer_len())
+            .unwrap_or_else(|| {
+                defmt_or_log::panic!(
+                    "Corrected len: {} Padded len: {} SIG len: {}",
+                    self.unpadded_buffer_len(),
+                    self.dma_descriptor.len(),
+                    self.header_internal().sig_len()
+                );
+            })
     }
     /// Same as [Self::raw_buffer], but mutable.
     pub fn raw_buffer_mut(&mut self) -> &mut [u8] {
@@ -341,6 +349,7 @@ pub struct WiFi<'res> {
     current_channel: AtomicU8,
     sequence_number: AtomicU16,
     tx_slot_queue: TxSlotQueue,
+    _phy_clock_guard: PhyClockGuard<'static>,
 }
 impl<'res> WiFi<'res> {
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -364,9 +373,12 @@ impl<'res> WiFi<'res> {
                 .modify(|_, w| w.wifi_force_iso().clear_bit());
         }
     }
+    fn enable_wifi_modem_clock() {
+        unsafe { WIFI::steal() }.enable_modem_clock(true);
+    }
     /// Enable the PHY.
-    fn phy_enable(radio_clock: &mut RadioClockController<'static>) {
-        radio_clock.enable_phy(true);
+    fn phy_enable() -> PhyClockGuard<'static> {
+        let clock_guard = unsafe { WIFI::steal() }.enable_phy_clock();
         let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
         let init_data = &PHY_INIT_DATA_DEFAULT;
         trace!("Enabling PHY.");
@@ -377,11 +389,13 @@ impl<'res> WiFi<'res> {
                 esp_phy_calibration_mode_t_PHY_RF_CAL_FULL,
             );
         }
+        clock_guard
     }
     /// Reset the MAC.
-    fn reset_mac(radio_clock: &mut RadioClockController<'static>, wifi: &WIFI) {
+    fn reset_mac() {
+        let mut wifi = unsafe { WIFI::steal() };
         trace!("Reseting MAC.");
-        radio_clock.reset_mac();
+        wifi.reset_wifi_mac();
         wifi.register_block()
             .ctrl()
             .modify(|r, w| unsafe { w.bits(r.bits() & 0x7fffffff) });
@@ -429,7 +443,8 @@ impl<'res> WiFi<'res> {
         }
         Self::set_isr();
     }
-    fn crypto_init(wifi: &WIFI) {
+    fn crypto_init() {
+        let wifi = unsafe { WIFI::steal() };
         // We enable hardware crypto for all interfaces.
         wifi.register_block()
             .crypto_control()
@@ -444,18 +459,16 @@ impl<'res> WiFi<'res> {
     }
     /// Initialize the WiFi peripheral.
     pub fn new<const BUFFER_COUNT: usize>(
-        wifi: WIFI,
-        radio_clock: RADIO_CLK<'static>,
+        _wifi: WIFI,
         _adc2: ADC2,
         wifi_resources: &'res mut WiFiResources<BUFFER_COUNT>,
     ) -> Self {
-        let mut radio_clock_contoller = RadioClockController::new(radio_clock);
         trace!("Initializing WiFi.");
         Self::enable_wifi_power_domain();
-        radio_clock_contoller.enable_wifi(true);
-        Self::phy_enable(&mut radio_clock_contoller);
+        Self::enable_wifi_modem_clock();
+        let phy_clock_guard = Self::phy_enable();
         let start_time = Instant::now();
-        Self::reset_mac(&mut radio_clock_contoller, &wifi);
+        Self::reset_mac();
         unsafe {
             Self::init_mac();
         }
@@ -463,7 +476,7 @@ impl<'res> WiFi<'res> {
 
         // This is technically already done in `hal_init`, but I want to replace that eventually,
         // so I'm trying to gradually move more and more parts out.
-        Self::crypto_init(&wifi);
+        Self::crypto_init();
         unsafe { ll::set_rx_enabled(true) };
 
         let temp = Self {
@@ -471,6 +484,7 @@ impl<'res> WiFi<'res> {
             dma_list: unsafe { wifi_resources.init() },
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
+            _phy_clock_guard: phy_clock_guard
         };
         // System should always be ahead of MAC time, since the MAC timer gets started after the
         // System timer.

@@ -18,11 +18,10 @@ async fn main(_spawner: Spawner) {
 
     let _ = wifi.set_channel(get_test_channel());
 
+    info!("RX");
     setup_filters(&wifi, STA_ADDRESS, AP_ADDRESS);
     insert_key(&wifi, &GTK, KeyType::Group, AP_ADDRESS, GTK_KEY_SLOT);
     insert_key(&wifi, &PTK, KeyType::Pairwise, AP_ADDRESS, PTK_KEY_SLOT);
-    let _ = wifi.dump_key_slot(GTK_KEY_SLOT);
-    let _ = wifi.dump_key_slot(PTK_KEY_SLOT);
 
     loop {
         let received = wifi.receive().await;

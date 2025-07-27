@@ -3,7 +3,7 @@ use core::{
     cell::RefCell,
     marker::{PhantomData},
     mem::MaybeUninit,
-    ptr::{ null_mut, NonNull},
+    ptr::NonNull,
 };
 
 use embassy_sync::blocking_mutex;
@@ -131,7 +131,7 @@ impl DmaDescriptorExt for DmaDescriptor {
     fn set_next(&mut self, next: Option<&mut DmaDescriptor>) {
         self.next = next
             .map(|next| next as *mut DmaDescriptor)
-            .unwrap_or(null_mut());
+            .unwrap_or_default();
     }
 }
 

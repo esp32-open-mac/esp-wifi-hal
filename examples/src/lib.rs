@@ -60,7 +60,7 @@ pub fn insert_key(
         mfp_enabled: false,
         spp_enabled: false,
     });
-    wifi.set_key(key_slot, 0, 0, address, cipher_parameters)
+    wifi.set_key(key_slot, 0, KEY_ID, address, cipher_parameters)
         .unwrap();
     let mut buf = [0x00u8; 32];
     info!(

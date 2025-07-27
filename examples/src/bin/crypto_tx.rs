@@ -15,11 +15,13 @@ use ieee80211::{
     mac_parser::MACAddress,
     scroll::Pwrite,
 };
+use log::info;
 
 const PAYLOAD: &[u8] = &[0x69; 2];
 
 const GROUP_ADDRESSED_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::new()
     .from_ds()
+    .protected()
     .category_data()
     .payload(PAYLOAD)
     .destination_address(MACAddress([0x01, 0x00, 0x5e, 0x00, 0x00, 0x16]))
@@ -28,6 +30,7 @@ const GROUP_ADDRESSED_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::ne
     .build();
 const PAIRWISE_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::new()
     .from_ds()
+    .protected()
     .category_data()
     .payload(PAYLOAD)
     .destination_address(MACAddress(STA_ADDRESS))
@@ -41,6 +44,7 @@ async fn main(_spawner: Spawner) {
     embassy_init(peripherals.TIMG0);
     let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
+    info!("TX");
     let _ = wifi.set_channel(get_test_channel());
     setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
 

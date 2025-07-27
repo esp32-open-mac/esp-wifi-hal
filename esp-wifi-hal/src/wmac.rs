@@ -989,11 +989,9 @@ impl<'res> WiFi<'res> {
                 .bit(cipher_parameters.is_wep_104())
                 .bits_256()
                 .bit(cipher_parameters.is_256_bit_key())
-                // FIXME: I know this is a pretty fugly fix, but until we get another PAC update, which
-                // will take forever, we're stuck with it.
-                .group_key()
-                .bit(cipher_parameters.is_pairwise())
                 .pairwise_key()
+                .bit(cipher_parameters.is_pairwise())
+                .group_key()
                 .bit(cipher_parameters.is_group())
                 .unknown()
                 .set_bit()

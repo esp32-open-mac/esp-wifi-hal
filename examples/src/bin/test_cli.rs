@@ -1,6 +1,11 @@
 #![no_std]
 #![no_main]
-use core::{fmt::Write, iter::repeat, marker::PhantomData, str};
+use core::{
+    fmt::Write,
+    iter::repeat,
+    marker::PhantomData,
+    str::{self, FromStr},
+};
 
 use alloc::{
     collections::btree_set::BTreeSet,
@@ -414,6 +419,81 @@ async fn s_pol_command<'a>(
     let _ = wifi.write_rx_policy_raw(interface, rx_policy);
     let _ = writeln!(uart0_tx, "New RX policy: {rx_policy:#08x}");
 }
+#[derive(PartialEq, Eq)]
+enum MemoryOperation {
+    Read,
+    Write,
+    And,
+    Or,
+    Xor,
+}
+impl FromStr for MemoryOperation {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "r" => Self::Read,
+            "w" => Self::Write,
+            "&" => Self::And,
+            "|" => Self::Or,
+            // I hate typing ^
+            "x" => Self::Xor,
+            _ => return Err(()),
+        })
+    }
+}
+fn m_mod<'a>(uart0_tx: &mut impl embedded_io::Write, mut args: impl Iterator<Item = &'a str> + 'a) {
+    let Some(operation) = args.next() else {
+        let _ = writeln!(uart0_tx, "Missing operation.");
+        return;
+    };
+    let Ok(operation) = MemoryOperation::from_str(operation) else {
+        let _ = writeln!(uart0_tx, "Invalid operation.");
+        return;
+    };
+    let Some(offset) = args.next() else {
+        let _ = writeln!(uart0_tx, "Missing offset from peripheral.");
+        return;
+    };
+    let Ok(offset) = usize::from_str_radix(offset, 16) else {
+        let _ = writeln!(uart0_tx, "Invalid offset.");
+        return;
+    };
+    if offset & 0b11 != 0 {
+        let _ = writeln!(uart0_tx, "Misaligned offset.");
+        return;
+    }
+    let address = unsafe { esp_hal::peripherals::WIFI::PTR.byte_add(offset) as *mut u32 };
+    let previous = unsafe { address.read_volatile() };
+    if operation == MemoryOperation::Read {
+        let _ = writeln!(uart0_tx, "Read {address:08x?}:{previous:08x}");
+        return;
+    }
+
+    let Some(value) = args.next() else {
+        let _ = writeln!(uart0_tx, "Missing value.");
+        return;
+    };
+    let maybe_stripped_value = value.strip_prefix("!");
+    let invert_value = maybe_stripped_value.is_some();
+    let Ok(mut value) = u32::from_str_radix(maybe_stripped_value.unwrap_or(value), 16) else {
+        let _ = writeln!(uart0_tx, "Invalid value.");
+        return;
+    };
+    if invert_value {
+        value = !value;
+    }
+    let new_value = match operation {
+        MemoryOperation::Read => unreachable!(),
+        MemoryOperation::Write => value,
+        MemoryOperation::And => previous & value,
+        MemoryOperation::Or => previous | value,
+        MemoryOperation::Xor => previous ^ value,
+    };
+    unsafe {
+        address.write_volatile(new_value);
+    }
+    let _ = writeln!(uart0_tx, "{address:08x?}:{new_value:08x}");
+}
 async fn run_command<'a>(
     wifi: &WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
@@ -435,7 +515,9 @@ async fn run_command<'a>(
                 dump - Dump status information.\n\
                 filter [BSSID|RA] [0|1] [set|enable|disable] <FILTER_ADDRESS> - Set filter status.\n\
                 sniff - Logs frames with rough info.\n\
-                scanning_mode [interface] [management_and_data|beacons_only|disabled] - Set the scanning mode.
+                scanning_mode INTERFACE [management_and_data|beacons_only|disabled] - Set the scanning mode.\n\
+                s_pol INTERFACE REGISTER_VALUE - Set the RX policy register for the given interface.
+                m_mod [r|w|&|||x] OFFSET_FROM_WIFI <VALUE>
             "
             );
         }
@@ -457,6 +539,7 @@ async fn run_command<'a>(
         "sniff" => sniff_command(wifi, uart0_tx).await,
         "scanning_mode" => scanning_mode_command(wifi, uart0_tx, args),
         "s_pol" => s_pol_command(wifi, uart0_tx, args).await,
+        "m_mod" => m_mod(uart0_tx, args),
         _ => {
             let _ = writeln!(uart0_tx, "Unknown command {command}");
         }

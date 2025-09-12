@@ -23,7 +23,7 @@ use esp_hal::{
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{BorrowedBuffer, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
@@ -242,6 +242,18 @@ async fn beacon_command<'a>(
 }
 fn dump_command(wifi: &WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let _ = writeln!(uart0_tx, "Current channel: {}", wifi.get_channel());
+    #[cfg(feature = "esp32")]
+{
+    extern "C" {
+        fn ram_phy_get_noisefloor() -> i32;
+    }
+    let nf_qdbm = unsafe {
+        ram_phy_get_noisefloor()
+    };
+    let decimal_nf = (nf_qdbm & 0b11) * 25;
+    let integer_nf = (nf_qdbm & !0b11) / 4;
+    let _ = writeln!(uart0_tx, "Noise floor: {integer_nf}.{decimal_nf} dBm");
+    }
 }
 fn parse_mac(mac_str: &str) -> Option<MACAddress> {
     let mut mac = [0x00u8; 6];
@@ -343,9 +355,10 @@ async fn sniff_command(wifi: &WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) 
         }
         let _ = write!(
             uart0_tx,
-            "Type: {:?} RSSI: {}dBm Interfaces: {:?} PHY Rate: {:?} Address 1: {}",
+            "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Address 1: {}",
             generic_frame.frame_control_field().frame_type(),
             received.rssi(),
+            received.rx_state(),
             &interfaces[..if_count],
             received.phy_rate(),
             generic_frame.address_1()
@@ -450,19 +463,27 @@ fn m_mod<'a>(uart0_tx: &mut impl embedded_io::Write, mut args: impl Iterator<Ite
         let _ = writeln!(uart0_tx, "Invalid operation.");
         return;
     };
-    let Some(offset) = args.next() else {
+    let Some(offset_or_address) = args.next() else {
         let _ = writeln!(uart0_tx, "Missing offset from peripheral.");
         return;
     };
-    let Ok(offset) = usize::from_str_radix(offset, 16) else {
-        let _ = writeln!(uart0_tx, "Invalid offset.");
-        return;
+    let address = if let Some(address) = offset_or_address.strip_prefix('r') {
+        let Ok(offset) = usize::from_str_radix(address, 16) else {
+            let _ = writeln!(uart0_tx, "Invalid offset.");
+            return;
+        };
+        if offset & 0b11 != 0 {
+            let _ = writeln!(uart0_tx, "Misaligned offset.");
+            return;
+        }
+        unsafe { esp_hal::peripherals::WIFI::PTR.byte_add(offset) as *mut u32 }
+    } else {
+        let Ok(address) = usize::from_str_radix(offset_or_address, 16) else {
+            let _ = writeln!(uart0_tx, "Invalid address.");
+            return;
+        };
+        address as *mut u32
     };
-    if offset & 0b11 != 0 {
-        let _ = writeln!(uart0_tx, "Misaligned offset.");
-        return;
-    }
-    let address = unsafe { esp_hal::peripherals::WIFI::PTR.byte_add(offset) as *mut u32 };
     let previous = unsafe { address.read_volatile() };
     if operation == MemoryOperation::Read {
         let _ = writeln!(uart0_tx, "Read {address:08x?}:{previous:08x}");
@@ -516,8 +537,8 @@ async fn run_command<'a>(
                 filter [BSSID|RA] [0|1] [set|enable|disable] <FILTER_ADDRESS> - Set filter status.\n\
                 sniff - Logs frames with rough info.\n\
                 scanning_mode INTERFACE [management_and_data|beacons_only|disabled] - Set the scanning mode.\n\
-                s_pol INTERFACE REGISTER_VALUE - Set the RX policy register for the given interface.
-                m_mod [r|w|&|||x] OFFSET_FROM_WIFI <VALUE>
+                s_pol INTERFACE REGISTER_VALUE - Set the RX policy register for the given interface. \n\
+                m_mod [r|w|&|||x] ADDRESS_OR_OFFSET <VALUE> - Modify raw memory. If you prefix the address with an `r`, it will be treated as an offset relative to the Wi-Fi peripheral base.
             "
             );
         }

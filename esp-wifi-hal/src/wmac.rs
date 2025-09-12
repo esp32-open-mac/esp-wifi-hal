@@ -114,25 +114,26 @@ pub struct BorrowedBuffer<'res> {
     dma_descriptor: &'res mut DmaDescriptor,
 }
 impl BorrowedBuffer<'_> {
-    const RX_CONTROL_HEADER_LENGTH: usize = size_of::<wifi_pkt_rx_ctrl_t>();
+    /// The length of the hardware header.
+    pub const RX_CONTROL_HEADER_LENGTH: usize = size_of::<wifi_pkt_rx_ctrl_t>();
 
     /// This returns the raw buffer, which is still padded with zeros to the nearest word boundary.
     /// Apparently the Wi-Fi MAC only does transfers with word aligned lengths, so the remaining
     /// bytes are filled with zeros. This buffer contains the RX control header and MPDU without
     /// FCS or MIC.
-    fn padded_buffer(&self) -> &[u8] {
+    pub fn padded_buffer(&self) -> &[u8] {
         unsafe {
             core::slice::from_raw_parts(self.dma_descriptor.buffer, self.dma_descriptor.len())
         }
     }
     /// See [Self::padded_buffer] for docs.
-    fn padded_buffer_mut(&mut self) -> &mut [u8] {
+    pub fn padded_buffer_mut(&mut self) -> &mut [u8] {
         unsafe {
             core::slice::from_raw_parts_mut(self.dma_descriptor.buffer, self.dma_descriptor.len())
         }
     }
     /// Get a pointer to the RX control header.
-    fn header_internal(&self) -> &wifi_pkt_rx_ctrl_t {
+    pub fn raw_header(&self) -> &wifi_pkt_rx_ctrl_t {
         unsafe {
             (self.dma_descriptor.buffer as *mut wifi_pkt_rx_ctrl_t)
                 .as_ref()
@@ -145,14 +146,14 @@ impl BorrowedBuffer<'_> {
     /// And all of that, since it apparently wasn't possible to put the correct length in the DMA
     /// descriptor...
     /// Frostie314159: This caused me such a fucking headache.
-    fn trailer_length(&self) -> usize {
+    pub fn trailer_length(&self) -> usize {
         let padded_len = self.dma_descriptor.len() - Self::RX_CONTROL_HEADER_LENGTH;
-        let delta = self.header_internal().sig_len() as usize - padded_len;
+        let delta = self.raw_header().sig_len() as usize - padded_len;
         delta.div_ceil(4) * 4
     }
     /// Calculate the actual unpadded length of the buffer.
-    fn unpadded_buffer_len(&self) -> usize {
-        self.header_internal().sig_len() as usize - self.trailer_length()
+    pub fn unpadded_buffer_len(&self) -> usize {
+        self.raw_header().sig_len() as usize - self.trailer_length()
             + Self::RX_CONTROL_HEADER_LENGTH
     }
     /// Returns the raw buffer returned by the hardware.
@@ -166,7 +167,7 @@ impl BorrowedBuffer<'_> {
                     "Corrected len: {} Padded len: {} SIG len: {}",
                     self.unpadded_buffer_len(),
                     self.dma_descriptor.len(),
-                    self.header_internal().sig_len()
+                    self.raw_header().sig_len()
                 );
             })
     }
@@ -240,6 +241,13 @@ impl BorrowedBuffer<'_> {
     pub fn interface_iterator(&self) -> impl Iterator<Item = usize> + '_ {
         let byte = self.header_buffer()[3];
         (0..WiFi::INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
+    }
+    /// Unknown RX state.
+    ///
+    /// We don't really know what this means, but it is presumably a bitmap. Currently this is only
+    /// intended for debugging purposes.
+    pub fn rx_state(&self) -> u8 {
+        self.header_buffer()[Self::RX_CONTROL_HEADER_LENGTH - 1]
     }
 }
 impl Drop for BorrowedBuffer<'_> {
@@ -484,7 +492,7 @@ impl<'res> WiFi<'res> {
             dma_list: unsafe { wifi_resources.init() },
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
-            _phy_clock_guard: phy_clock_guard
+            _phy_clock_guard: phy_clock_guard,
         };
         // System should always be ahead of MAC time, since the MAC timer gets started after the
         // System timer.

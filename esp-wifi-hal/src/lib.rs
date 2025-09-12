@@ -58,24 +58,24 @@ extern crate defmt_or_log;
 #[macro_use]
 extern crate core;
 
+mod crypto;
 mod dma_list;
 mod ffi;
+mod ll;
 mod phy_init_data;
 mod rates;
 mod sync;
 mod wmac;
-mod crypto;
-mod ll;
 
 #[cfg(feature = "esp32")]
 use esp32 as esp_pac;
 #[cfg(feature = "esp32s2")]
 use esp32s2 as esp_pac;
 
+pub use crypto::*;
 pub use dma_list::WiFiResources;
 pub use rates::*;
 pub use wmac::*;
-pub use crypto::*;
 
 #[cfg(not(feature = "critical_section"))]
 type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;

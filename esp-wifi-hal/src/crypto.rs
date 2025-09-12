@@ -81,7 +81,6 @@ pub enum CipherParameters<'a> {
     Tkip(&'a [u8; TKIP_KEY_LENGTH], KeyType),
     /// AES CTR/CBC-MAC Mode Protocol (CCMP)
     Ccmp(AesCipherParameters<'a>),
-
     /*
     /// AES Galois/CTR Mode Protocol (GCMP)
     ///
@@ -138,7 +137,7 @@ impl CipherParameters<'_> {
         match self {
             Self::Wep(key) => key.key(),
             Self::Tkip(key, _) => key.as_slice(),
-            _ => self.aes_cipher_parameters().unwrap().key.key()
+            _ => self.aes_cipher_parameters().unwrap().key.key(),
         }
     }
     /// Check if the cipher is an authenticated encryption with associated data (AEAD) algorithm.

@@ -1,10 +1,5 @@
-use crate::{ ll, DefaultRawMutex};
-use core::{
-    cell::RefCell,
-    marker::{PhantomData},
-    mem::MaybeUninit,
-    ptr::NonNull,
-};
+use crate::{ll, DefaultRawMutex};
+use core::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
 
 use embassy_sync::blocking_mutex;
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
@@ -311,7 +306,7 @@ impl<'res> DMAList<'res> {
         unsafe {
             let (rx_next, rx_last) = (
                 ll::next_rx_descriptor_raw() as u32,
-                ll::last_rx_descriptor_raw() as u32
+                ll::last_rx_descriptor_raw() as u32,
             );
             trace!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
         }

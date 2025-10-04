@@ -11,7 +11,7 @@ use crate::{
     ll,
     rates::RATE_LUT,
     sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
-    CipherParameters, WiFiRate,
+    CipherParameters, WiFiRate, INTERFACE_COUNT, KEY_SLOT_COUNT,
 };
 use embassy_sync::blocking_mutex::{self};
 use embassy_time::Instant;
@@ -240,7 +240,7 @@ impl BorrowedBuffer<'_> {
     /// Get an iterator over the interfaces, to which this frame is addressed.
     pub fn interface_iterator(&self) -> impl Iterator<Item = usize> + '_ {
         let byte = self.header_buffer()[3];
-        (0..WiFi::INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
+        (0..INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
     }
     /// Unknown RX state.
     ///
@@ -360,13 +360,6 @@ pub struct WiFi<'res> {
     _phy_clock_guard: PhyClockGuard<'static>,
 }
 impl<'res> WiFi<'res> {
-    #[cfg(any(feature = "esp32", feature = "esp32s2"))]
-    /// The number of "interfaces" supported by the hardware.
-    pub const INTERFACE_COUNT: usize = 4;
-
-    /// The number of key slots the hardware has.
-    pub const KEY_SLOT_COUNT: usize = 25;
-
     /// Enable the Wi-Fi power domain.
     fn enable_wifi_power_domain() {
         unsafe {
@@ -818,7 +811,7 @@ impl<'res> WiFi<'res> {
     }
     /// Check if that interface is valid.
     pub const fn validate_interface(interface: usize) -> WiFiResult<()> {
-        if interface < Self::INTERFACE_COUNT {
+        if interface < INTERFACE_COUNT {
             Ok(())
         } else {
             Err(WiFiError::InterfaceOutOfBounds)
@@ -918,7 +911,7 @@ impl<'res> WiFi<'res> {
     }
     /// Check if they key slot is valid.
     pub const fn validate_key_slot(key_slot: usize) -> WiFiResult<()> {
-        if key_slot < Self::KEY_SLOT_COUNT {
+        if key_slot < KEY_SLOT_COUNT {
             Ok(())
         } else {
             Err(WiFiError::KeySlotOutOfBounds)
@@ -949,7 +942,7 @@ impl<'res> WiFi<'res> {
             .crypto_key_slot_state()
             .read()
             .bits();
-        (0..Self::KEY_SLOT_COUNT).map(move |i| check_bit!(key_slot_state, bit!(i)))
+        (0..KEY_SLOT_COUNT).map(move |i| check_bit!(key_slot_state, bit!(i)))
     }
     /// Set a cryptographic key.
     ///

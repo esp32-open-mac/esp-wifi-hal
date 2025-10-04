@@ -74,6 +74,7 @@ use esp32s2 as esp_pac;
 
 pub use crypto::*;
 pub use dma_list::WiFiResources;
+pub use ll::{INTERFACE_COUNT, KEY_SLOT_COUNT};
 pub use rates::*;
 pub use wmac::*;
 

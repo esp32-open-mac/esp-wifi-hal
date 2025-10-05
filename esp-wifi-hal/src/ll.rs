@@ -336,35 +336,11 @@ impl<'d> LowLevelDriver<'d> {
     /// Enable or disable a key slot.
     ///
     /// As soon, as the key slot is enabled, the hardware will treat the data in it as valid.
-    pub fn set_key_slot_status(&self, key_slot: usize, enabled: bool) {
+    pub fn set_key_slot_enable(&self, key_slot: usize, enabled: bool) {
         Self::regs()
             .crypto_control()
             .crypto_key_slot_state()
             .modify(|_, w| w.key_slot_enable(key_slot as u8).bit(enabled));
-    }
-    #[inline]
-    /// Set the MAC address for the specified key slot.
-    ///
-    /// This is always the address of the party, with which this key is shared.
-    pub fn set_key_slot_address(&self, key_slot: usize, address: &[u8; 6]) {
-        let wifi = Self::regs();
-        let key_slot = wifi.crypto_key_slot(key_slot);
-        let (low, high) = split_mac(address);
-
-        key_slot.addr_low().write(|w| unsafe { w.bits(low) });
-        key_slot
-            .addr_high()
-            .modify(|_, w| unsafe { w.addr().bits(high) });
-    }
-    #[inline]
-    /// Set the key ID for the specified key slot.
-    ///
-    /// Since only key IDs in the range from 0-3 are valid, all other values will be be truncated.
-    pub fn set_key_id(&self, key_slot: usize, key_id: u8) {
-        Self::regs()
-            .crypto_key_slot(key_slot)
-            .addr_high()
-            .modify(|_, w| unsafe { w.key_id().bits(key_id) });
     }
     /// Set the cryptographic key for the specified key slot.
     ///
@@ -402,31 +378,52 @@ impl<'d> LowLevelDriver<'d> {
     /// This will also set the 22nd bit, of the [addr_high register](crate::esp_pac::wifi::crypto_key_slot::addr_high),
     /// the purpose of which we don't really know. In the PACs, it can be found at
     /// [unknown](crate::esp_pac::wifi::crypto_key_slot::addr_high::W::unknown).
-    pub fn set_key_slot_parameters(&self, key_slot: usize, key_slot_parameters: &KeySlotParameters) {
+    ///
+    /// The rationale behind having a single function setting all the parameters, is that it's unlikely
+    /// one of these will change, while the key slot is in use. It is however possible, that the key
+    /// gets changed, so that's in a separate function.
+    pub fn set_key_slot_parameters(
+        &self,
+        key_slot: usize,
+        key_slot_parameters: &KeySlotParameters,
+    ) {
         let wifi = Self::regs();
         let key_slot = wifi.crypto_key_slot(key_slot);
-        let (address_low, address_high) = split_mac(&key_slot_parameters.address);
+        let (address_low, address_high) = split_address(&key_slot_parameters.address);
 
-        key_slot.addr_low().write(|w| unsafe { w.bits(address_low) });
         key_slot
-            .addr_high()
-            .modify(|_, w| unsafe {
-                w.key_id()
-                    .bits(key_slot_parameters.key_id)
-                    .pairwise_key()
-                    .bit(key_slot_parameters.pairwise)
-                    .group_key()
-                    .bit(key_slot_parameters.group)
-                    .wep_104()
-                    .bit(key_slot_parameters.wep_104)
-                    .algorithm()
-                    .bits(key_slot_parameters.algorithm)
-                    .interface_id()
-                    .bits(key_slot_parameters.interface)
-                    .unknown()
-                    .set_bit()
-                    .addr().bits(address_high)
-            });
+            .addr_low()
+            .write(|w| unsafe { w.bits(address_low) });
+        key_slot.addr_high().modify(|_, w| unsafe {
+            w.key_id()
+                .bits(key_slot_parameters.key_id)
+                .pairwise_key()
+                .bit(key_slot_parameters.pairwise)
+                .group_key()
+                .bit(key_slot_parameters.group)
+                .wep_104()
+                .bit(key_slot_parameters.wep_104)
+                .algorithm()
+                .bits(key_slot_parameters.algorithm)
+                .interface_id()
+                .bits(key_slot_parameters.interface)
+                .unknown()
+                .set_bit()
+                .addr()
+                .bits(address_high)
+        });
+    }
+    /// Clear all data from a key slot.
+    ///
+    /// This will not disable the key slot, use [Self::set_key_slot_enable] for that.
+    pub fn clear_key_slot(&self, key_slot: usize) {
+        let wifi = Self::regs();
+        let key_slot = wifi.crypto_key_slot(key_slot);
+
+        // Effectively zeroes the entire slot.
+        key_slot.addr_low().reset();
+        key_slot.addr_high().reset();
+        key_slot.key_value_iter().for_each(KEY_VALUE::reset);
     }
 }
 

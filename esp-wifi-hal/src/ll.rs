@@ -10,7 +10,7 @@ use esp_hal::{
 };
 use esp_wifi_sys::include::*;
 
-use crate::{esp_pac::WIFI, phy_init_data::PHY_INIT_DATA_DEFAULT};
+use crate::{esp_pac::{WIFI, wifi::crypto_key_slot::KEY_VALUE}, phy_init_data::PHY_INIT_DATA_DEFAULT};
 
 /// Run a reversible sequence of functions either forward or in reverse.
 ///
@@ -36,7 +36,7 @@ where
 /// Split a MAC address into a low [u32] and high [u16].
 ///
 /// Let's hope the compiler optimizes this to two load-store pairs.
-fn split_mac(address: &[u8; 6]) -> (u32, u16) {
+fn split_address(address: &[u8; 6]) -> (u32, u16) {
     let (low, high) = address.split_at(4);
     (
         u32::from_ne_bytes(low.try_into().unwrap()),
@@ -78,6 +78,23 @@ pub struct KeySlotParameters {
     pub algorithm: u8,
     /// If the algorithm is WEP, is the key 104 bits long.
     pub wep_104: bool,
+}
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// The bank of the RX filter.
+pub enum RxFilterBank {
+    /// Basic Service Set Identifier (BSSID)
+    BSSID,
+    /// Receiver Address
+    ReceiverAddress,
+}
+impl RxFilterBank {
+    pub(crate) fn into_bits(self) -> usize {
+        match self {
+            Self::BSSID => 0,
+            Self::ReceiverAddress => 1,
+        }
+    }
 }
 
 #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -297,6 +314,74 @@ impl<'d> LowLevelDriver<'d> {
     /// We don't know, if this influences the RF frontend in any way.
     pub fn rx_enabled(&self) -> bool {
         Self::regs().rx_ctrl().read().rx_enable().bit()
+    }
+    /// Enable or disable the specified filter.
+    pub fn set_filter_enable(&self, interface: usize, filter_bank: RxFilterBank, enabled: bool) {
+        Self::regs()
+            .filter_bank(filter_bank.into_bits())
+            .mask_high(interface)
+            .modify(|_, w| w.enabled().bit(enabled));
+    }
+    pub fn filter_enabled(&self, interface: usize, filter_bank: RxFilterBank) -> bool {
+        Self::regs()
+            .filter_bank(filter_bank.into_bits())
+            .mask_high(interface)
+            .read()
+            .enabled()
+            .bit()
+    }
+    /// Set the filter address for the specified interface and bank combination.
+    ///
+    /// This will neither enable the filter nor configure the mask.
+    pub fn set_filter_address(
+        &self,
+        interface: usize,
+        filter_bank: RxFilterBank,
+        address: &[u8; 6],
+    ) {
+        let wifi = Self::regs();
+        let filter_bank = wifi.filter_bank(filter_bank.into_bits());
+
+        let (address_low, address_high) = split_address(address);
+        filter_bank
+            .addr_low(interface)
+            .write(|w| unsafe { w.bits(address_low) });
+        filter_bank
+            .addr_high(interface)
+            .write(|w| unsafe { w.addr().bits(address_high) });
+    }
+    /// Set the filter mask for the specified interface and bank combination.
+    ///
+    /// This will neither enable the filter nor configure the address.
+    pub fn set_filter_mask(&self, interface: usize, filter_bank: RxFilterBank, mask: &[u8; 6]) {
+        let wifi = Self::regs();
+        let filter_bank = wifi.filter_bank(filter_bank.into_bits());
+
+        let (mask_low, mask_high) = split_address(mask);
+        filter_bank
+            .mask_low(interface)
+            .write(|w| unsafe { w.bits(mask_low) });
+        // We need to modfiy here, since otherwise we would be clearing the enable bit, which is
+        // not part of this functions job.
+        filter_bank
+            .mask_high(interface)
+            .modify(|_, w| unsafe { w.mask().bits(mask_high) });
+    }
+    /// Clear a filter bank.
+    ///
+    /// This zeroes out the address and mask, while also disabling the filter as a side effect.
+    /// Although the inverse is not true, it makes sense to do this, since that way we can just
+    /// reset the [mask_high](crate::esp_pac::wifi::filter_bank::FILTER_BANK::mask_high) field,
+    /// saving us one read. This also prevents keeping the slot enabled, while zeroing it, which
+    /// would be invalid regardless.
+    pub fn clear_filter_bank(&self, interface: usize, filter_bank: RxFilterBank) {
+        let wifi = Self::regs();
+        let filter_bank = wifi.filter_bank(filter_bank.into_bits());
+
+        filter_bank.addr_low(interface).reset();
+        filter_bank.addr_high(interface).reset();
+        filter_bank.mask_low(interface).reset();
+        filter_bank.mask_high(interface).reset();
     }
 
     // Crypto

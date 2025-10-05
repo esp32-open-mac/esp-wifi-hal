@@ -8,7 +8,7 @@ use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{
     esp_pac::wifi::TX_SLOT_CONFIG,
-    ll,
+    ll::{self, RxFilterBank},
     rates::RATE_LUT,
     sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
     CipherParameters, WiFiRate, INTERFACE_COUNT, KEY_SLOT_COUNT,
@@ -255,23 +255,6 @@ impl Drop for BorrowedBuffer<'_> {
         self.dma_list.lock(|dma_list| {
             dma_list.borrow_mut().recycle(self.dma_descriptor);
         });
-    }
-}
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-/// The bank of the RX filter.
-pub enum RxFilterBank {
-    /// Basic Service Set Identifier (BSSID)
-    BSSID,
-    /// Receiver Address
-    ReceiverAddress,
-}
-impl RxFilterBank {
-    const fn into_bits(self) -> usize {
-        match self {
-            Self::BSSID => 0,
-            Self::ReceiverAddress => 1,
-        }
     }
 }
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

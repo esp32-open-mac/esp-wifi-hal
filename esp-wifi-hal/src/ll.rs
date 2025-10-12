@@ -6,11 +6,16 @@ use core::{iter::IntoIterator, ptr::NonNull};
 use esp_hal::{
     clock::{ModemClockController, PhyClockGuard},
     dma::DmaDescriptor,
+    interrupt::{self, CpuInterrupt, InterruptHandler},
     peripherals::{LPWR, WIFI as HalWIFI},
 };
 use esp_wifi_sys::include::*;
 
-use crate::{esp_pac::{WIFI, wifi::crypto_key_slot::KEY_VALUE}, phy_init_data::PHY_INIT_DATA_DEFAULT};
+use crate::{
+    esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
+    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init},
+    phy_init_data::PHY_INIT_DATA_DEFAULT,
+};
 
 /// Run a reversible sequence of functions either forward or in reverse.
 ///
@@ -84,15 +89,129 @@ pub struct KeySlotParameters {
 /// The bank of the RX filter.
 pub enum RxFilterBank {
     /// Basic Service Set Identifier (BSSID)
-    BSSID,
+    Bssid,
     /// Receiver Address
     ReceiverAddress,
 }
 impl RxFilterBank {
     pub(crate) fn into_bits(self) -> usize {
         match self {
-            Self::BSSID => 0,
+            Self::Bssid => 0,
             Self::ReceiverAddress => 1,
+        }
+    }
+}
+macro_rules! cause_bitmask {
+    ([$($(@chip($chips:tt))? $mask:expr),*]) => {
+        const {
+            let mut temp = 0;
+            $(
+                #[allow(unused)]
+                let mut condition = true;
+                $(
+                    condition = cfg!(any($chips));
+                )?
+                temp |= if condition { $mask } else { 0 };
+            )*
+            temp
+        }
+    };
+    ($mask:expr) => {
+        $mask
+    };
+}
+/// Create a struct to access the cause of an interrupt.
+///
+/// All declared accessor functions are marked as `inline`, since they are basically just a mask
+/// and a compare.
+macro_rules! interrupt_cause_struct {
+    ($(#[$struct_meta:meta])* $struct_name:ident => {
+        $(
+            $(#[$function_meta:meta])*
+            $function_name:ident => $mask:tt
+        ),*
+    }) => {
+        $(#[$struct_meta])*
+        #[cfg_attr(feature = "defmt", defmt::Format)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(C)]
+        pub struct $struct_name(u32);
+        impl $struct_name {
+            #[inline]
+            /// Get the raw interrupt cause.
+            pub const fn raw_cause(&self) -> u32 {
+                self.0
+            }
+            #[inline]
+            /// Is there no known cause for the interrupt.
+            pub fn is_emtpy(&self) -> bool {
+                self.0 == 0
+            }
+            $(
+                #[inline]
+                $(#[$function_meta])*
+                pub fn $function_name(&self) -> bool {
+                    (self.0 & cause_bitmask!($mask)) != 0
+                }
+            )*
+        }
+    };
+}
+interrupt_cause_struct! {
+    /// Cause for the MAC interrupt.
+    MacInterruptCause => {
+        /// A frame was received.
+        ///
+        /// We don't know, what the individual bits mean, but this works.
+        rx => [0x100020, @chip(esp32) 0x4],
+        /// A frame was transmitted successfully.
+        tx_success => 0x80,
+        /// A transmission timeout occured.
+        ///
+        /// We think this might have something to do with waiting for medium access.
+        tx_timeout => 0x80000,
+        /// A transmission collision occured.
+        ///
+        /// This might be caused by multiple transmissions with different ACs getting a TXOP at the
+        /// same time.
+        tx_collision => 0x100
+    }
+}
+#[cfg(pwr_interrupt_present)]
+interrupt_cause_struct! {
+    /// Cause for the power interrupt.
+    PwrInterruptCause => {
+        /// A TBTT was reached or is about to be reached.
+        ///
+        /// NOTE: This is an unconfirmed assumption.
+        tbtt => [@chip(esp32s2) 0x1e],
+        // TODO: No idea.
+        tsf_timer => [@chip(esp32s2) 0x1e0]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The different interrupts of the Wi-Fi peripheral.
+pub enum WiFiInterrupt {
+    /// Medium Access Control interrupt
+    Mac,
+    /// Baseband interrupt
+    ///
+    /// NOTE: We know literally nothing about this interrupt, as it doesn't appear to be used at
+    /// all. This is only included for completeness.
+    Bb,
+    #[cfg(pwr_interrupt_present)]
+    /// Low power interrupt
+    Pwr,
+    // With chips supporting Wi-Fi 6, there will be a BSS Color interrupt here.
+}
+impl From<WiFiInterrupt> for PacInterrupt {
+    fn from(value: WiFiInterrupt) -> Self {
+        match value {
+            WiFiInterrupt::Mac => PacInterrupt::WIFI_MAC,
+            WiFiInterrupt::Bb => PacInterrupt::WIFI_BB,
+            #[cfg(pwr_interrupt_present)]
+            WiFiInterrupt::Pwr => PacInterrupt::WIFI_PWR,
         }
     }
 }
@@ -120,13 +239,11 @@ pub const KEY_SLOT_COUNT: usize = 25;
 /// A lot of the functions, that can panic, will do so under similar conditions, so the docs are
 /// shared. When an index (i.e. key slot or interface) is provided, it is expected, that the input
 /// is within the valid range. If it is not, the function will panic.
-pub struct LowLevelDriver<'d> {
-    /// The Wi-Fi peripheral.
-    wifi: HalWIFI<'d>,
+pub struct LowLevelDriver {
     /// Prevents the PHY clock from being disabled, while the driver is running.
-    phy_clock_guard: PhyClockGuard<'d>,
+    _phy_clock_guard: PhyClockGuard<'static>,
 }
-impl<'d> LowLevelDriver<'d> {
+impl LowLevelDriver {
     /// Get the PAC Wi-Fi peripheral.
     ///
     /// This stops RA from doing funky shit.
@@ -134,12 +251,9 @@ impl<'d> LowLevelDriver<'d> {
         unsafe { WIFI::steal() }
     }
     /// Create a new [LowLevelDriver].
-    pub fn new(mut wifi: esp_hal::peripherals::WIFI<'d>) -> Self {
-        let phy_clock_guard = unsafe { Self::init(&mut wifi) };
-        Self {
-            wifi,
-            phy_clock_guard,
-        }
+    pub fn new(_wifi: esp_hal::peripherals::WIFI<'_>) -> Self {
+        let _phy_clock_guard = unsafe { Self::init() };
+        Self { _phy_clock_guard }
     }
 
     // Initialization
@@ -173,7 +287,7 @@ impl<'d> LowLevelDriver<'d> {
     /// Initialize the PHY.
     ///
     /// NOTE: This is very temporary and will be replaced, as soon as `esp-phy` is released.
-    unsafe fn initialize_phy() -> PhyClockGuard<'d> {
+    unsafe fn initialize_phy() -> PhyClockGuard<'static> {
         let clock_guard = unsafe { HalWIFI::steal() }.enable_phy_clock();
         let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
         let init_data = &PHY_INIT_DATA_DEFAULT;
@@ -199,7 +313,7 @@ impl<'d> LowLevelDriver<'d> {
 
         // Disable RX
         unsafe {
-            Self::set_rx_status(false);
+            Self::set_rx_enable(false);
         }
     }
     /// Initialize or deinitialize the MAC.
@@ -246,9 +360,6 @@ impl<'d> LowLevelDriver<'d> {
     /// # Safety
     /// This should only be called during init.
     unsafe fn setup_mac() {
-        unsafe extern "C" {
-            fn hal_init();
-        }
         // We call the proprietary blob here, to do some init for us. In the long term, this will
         // be moved to open source code. In the meantime, we do the init, that we already understand a
         // second time in open source code
@@ -257,7 +368,7 @@ impl<'d> LowLevelDriver<'d> {
         }
 
         // Open source setup code
-        Self::crypto_init();
+        Self::init_crypto();
     }
     /// Initialize the hardware.
     ///
@@ -278,21 +389,69 @@ impl<'d> LowLevelDriver<'d> {
     /// At the moment, this is only intended to be called upon initializing the low level driver.
     /// Reinitialization and partial PHY calibration are NOT handled at all. The effects of calling
     /// this multiple times are unknown.
-    unsafe fn init(wifi: &mut HalWIFI<'d>) -> PhyClockGuard<'d> {
+    unsafe fn init() -> PhyClockGuard<'static> {
         // Enable the power domain.
         unsafe {
             Self::set_module_status(true);
         }
         // Enable the modem clock.
-        wifi.enable_modem_clock(true);
+        unsafe { HalWIFI::steal() }.enable_modem_clock(true);
         // Initialize the PHY.
         let clock_guard = unsafe { Self::initialize_phy() };
         unsafe {
             Self::reset_mac();
             Self::set_mac_state(true);
+            Self::setup_mac();
         }
+        Self::init_crypto();
 
         clock_guard
+    }
+
+    // Interrupt handling
+
+    #[inline(always)]
+    /// Get and clear the MAC interrupt cause.
+    ///
+    /// # Safety
+    /// This is expected to be called ONLY from the MAC interrupt handler.
+    pub unsafe fn get_and_clear_mac_interrupt_cause() -> MacInterruptCause {
+        let cause = Self::regs().mac_interrupt().wifi_int_status().read().bits();
+        Self::regs()
+            .mac_interrupt()
+            .wifi_int_clear()
+            .write(|w| unsafe { w.bits(cause) });
+        MacInterruptCause(cause)
+    }
+    #[cfg(pwr_interrupt_present)]
+    #[inline(always)]
+    /// Get and clear the PWR interrupt cause.
+    ///
+    /// # Safety
+    /// This is expected to be called ONLY from the MAC interrupt handler.
+    pub unsafe fn get_and_clear_pwr_interrupt_cause() -> PwrInterruptCause {
+        let cause = Self::regs().pwr_interrupt().pwr_int_status().read().bits();
+        Self::regs()
+            .pwr_interrupt()
+            .pwr_int_clear()
+            .write(|w| unsafe { w.bits(cause) });
+        PwrInterruptCause(cause)
+    }
+    /// Configure the specified interrupt.
+    ///
+    /// Usually all relevant interrupts are bound to the same interrupt handler and CPU interrupt.
+    /// The default CPU interrupt for Wi-Fi is [CpuInterrupt::Interrupt0LevelPriority1].
+    pub fn configure_interrupt(
+        &self,
+        interrupt: WiFiInterrupt,
+        cpu_interrupt: CpuInterrupt,
+        interrupt_handler: InterruptHandler,
+    ) {
+        unsafe {
+            let interrupt = interrupt.into();
+            interrupt::bind_interrupt(interrupt, interrupt_handler.handler());
+            let _ = interrupt::enable_direct(interrupt, cpu_interrupt);
+        }
     }
 
     // RX
@@ -302,12 +461,11 @@ impl<'d> LowLevelDriver<'d> {
     ///
     /// # Safety
     /// Enabling RX, when the DMA list isn't setup correctly yet, may be incorrect.
-    unsafe fn set_rx_status(enable_rx: bool) {
+    unsafe fn set_rx_enable(enable_rx: bool) {
         Self::regs()
             .rx_ctrl()
             .modify(|_, w| w.rx_enable().bit(enable_rx));
     }
-
     #[inline]
     /// Check if RX is enabled.
     ///
@@ -315,6 +473,64 @@ impl<'d> LowLevelDriver<'d> {
     pub fn rx_enabled(&self) -> bool {
         Self::regs().rx_ctrl().read().rx_enable().bit()
     }
+    /// Tell the hardware to reload the RX descriptors.
+    ///
+    /// This will spin, until the bit is clear again.
+    pub fn reload_hw_rx_descriptors(&self) {
+        let wifi = Self::regs();
+        let reg = wifi.rx_ctrl();
+
+        // Start the reload.
+        reg.modify(|_, w| w.rx_descr_reload().set_bit());
+
+        // Wait for the hardware descriptors to no longer be in reload.
+        while reg.read().rx_descr_reload().bit() {}
+    }
+    /// Set the base descriptor.
+    pub fn set_base_rx_descriptor(&self, base_descriptor: NonNull<DmaDescriptor>) {
+        Self::regs()
+            .rx_dma_list()
+            .rx_descr_base()
+            .write(|w| unsafe { w.bits(base_descriptor.as_ptr() as u32) });
+        self.reload_hw_rx_descriptors();
+    }
+    /// Reset the base descriptor.
+    pub fn clear_base_rx_descriptor(&self) {
+        Self::regs().rx_dma_list().rx_descr_base().reset();
+    }
+    /// Start receiving frames.
+    ///
+    /// This will set the provided descriptor as the base of the RX DMA list and enable RX.
+    pub fn start_rx(&self, base_descriptor: NonNull<DmaDescriptor>) {
+        self.set_base_rx_descriptor(base_descriptor);
+        unsafe {
+            Self::set_rx_enable(true);
+        }
+    }
+    /// Stop receiving frames.
+    ///
+    /// This will also clear the RX DMA list.
+    pub fn stop_rx(&self) {
+        unsafe {
+            Self::set_rx_enable(false);
+        }
+        self.clear_base_rx_descriptor();
+    }
+    /// Get the base RX descriptor.
+    pub fn base_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
+        NonNull::new(Self::regs().rx_dma_list().rx_descr_base().read().bits() as *mut DmaDescriptor)
+    }
+    /// Get the next RX descriptor.
+    pub fn next_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
+        NonNull::new(Self::regs().rx_dma_list().rx_descr_next().read().bits() as *mut DmaDescriptor)
+    }
+    /// Get the last RX descriptor.
+    pub fn last_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
+        NonNull::new(Self::regs().rx_dma_list().rx_descr_last().read().bits() as *mut DmaDescriptor)
+    }
+
+    // RX filtering
+
     /// Enable or disable the specified filter.
     pub fn set_filter_enable(&self, interface: usize, filter_bank: RxFilterBank, enabled: bool) {
         Self::regs()
@@ -322,6 +538,7 @@ impl<'d> LowLevelDriver<'d> {
             .mask_high(interface)
             .modify(|_, w| w.enabled().bit(enabled));
     }
+    /// Check if the filter is enabled.
     pub fn filter_enabled(&self, interface: usize, filter_bank: RxFilterBank) -> bool {
         Self::regs()
             .filter_bank(filter_bank.into_bits())
@@ -384,6 +601,8 @@ impl<'d> LowLevelDriver<'d> {
         filter_bank.mask_high(interface).reset();
     }
 
+    // TX
+
     // Crypto
 
     #[inline]
@@ -407,7 +626,7 @@ impl<'d> LowLevelDriver<'d> {
     ///
     /// This is pretty much the same as `hal_crypto_init`, except we init crypto for all
     /// interfaces, not just zero and one.
-    fn crypto_init() {
+    fn init_crypto() {
         // Enable crypto for all interfaces.
         (0..INTERFACE_COUNT).for_each(Self::enable_crypto_for_interface);
 
@@ -417,7 +636,6 @@ impl<'d> LowLevelDriver<'d> {
             .general_crypto_control()
             .reset();
     }
-    #[inline]
     /// Enable or disable a key slot.
     ///
     /// As soon, as the key slot is enabled, the hardware will treat the data in it as valid.
@@ -426,6 +644,15 @@ impl<'d> LowLevelDriver<'d> {
             .crypto_control()
             .crypto_key_slot_state()
             .modify(|_, w| w.key_slot_enable(key_slot as u8).bit(enabled));
+    }
+    /// Check if the key slot is enabled.
+    pub fn key_slot_enabled(&self, key_slot: usize) -> bool {
+        Self::regs()
+            .crypto_control()
+            .crypto_key_slot_state()
+            .read()
+            .key_slot_enable(key_slot as u8)
+            .bit()
     }
     /// Set the cryptographic key for the specified key slot.
     ///
@@ -510,80 +737,55 @@ impl<'d> LowLevelDriver<'d> {
         key_slot.addr_high().reset();
         key_slot.key_value_iter().for_each(KEY_VALUE::reset);
     }
-}
-
-/// Tell the hardware to reload the RX descriptors.
-///
-/// This will spin, until the bit is clear again.
-pub unsafe fn reload_hw_rx_descriptors() {
-    let reg = HalWIFI::regs().rx_ctrl();
-
-    // Start the reload.
-    reg.modify(|_, w| w.rx_descr_reload().set_bit());
-
-    // Wait for the hardware descriptors to no longer be in reload.
-    while reg.read().rx_descr_reload().bit() {}
-}
-/// Set the base descriptor.
-///
-/// If `base_descriptor` is [None], this will reset the register back to zero.
-pub unsafe fn set_base_rx_descriptor(base_descriptor: Option<NonNull<DmaDescriptor>>) {
-    let reg = HalWIFI::regs().rx_dma_list().rx_descr_base();
-    if let Some(ptr) = base_descriptor {
-        reg.write(|w| w.bits(ptr.as_ptr() as u32));
-    } else {
-        reg.reset();
+    /// Set the crypto parameters for an interface.
+    ///
+    /// Management Frame Protection (MFP) and Signaling and Payload Protection (SPP) are configured
+    /// globally for every interface, as well as the use of an Authenticated Encryption with
+    /// Associated Data (AEAD) system. It is not possible to use non-AEAD ciphers (i.e. WEP) in
+    /// parallel with AEAD ciphers (all others) on the same interface.
+    ///
+    /// NOTE: SMS4 (WAPI) is not currently supported, as information about it is scarce and it's
+    /// not really used in practice.
+    pub fn set_interface_crypto_parameters(
+        &self,
+        interface: usize,
+        protect_management_frames: bool,
+        protect_signaling_and_payload: bool,
+        is_cipher_aead: bool,
+    ) {
+        Self::regs()
+            .crypto_control()
+            .interface_crypto_control(interface)
+            .modify(|r, w| unsafe {
+                w.bits(r.bits() | 0x10103)
+                    .spp_enable()
+                    .bit(protect_signaling_and_payload)
+                    .pmf_disable()
+                    .bit(!protect_management_frames)
+                    .aead_cipher()
+                    .bit(is_cipher_aead)
+                    .sms4()
+                    .clear_bit()
+            });
     }
-    reload_hw_rx_descriptors();
-}
-/// Get the raw value of the next RX descriptor register.
-///
-/// # Safety
-/// This could be unsafe, since we don't know what happens if we read the register, while the
-/// peripheral is powered down.
-pub unsafe fn next_rx_descriptor_raw() -> *mut DmaDescriptor {
-    HalWIFI::regs().rx_dma_list().rx_descr_next().read().bits() as *mut DmaDescriptor
-}
-/// Get the raw value of the last RX descriptor register.
-///
-/// # Safety
-/// This could be unsafe, since we don't know what happens if we read the register, while the
-/// peripheral is powered down.
-pub unsafe fn last_rx_descriptor_raw() -> *mut DmaDescriptor {
-    HalWIFI::regs().rx_dma_list().rx_descr_last().read().bits() as *mut DmaDescriptor
-}
 
-/// Get the last RX descriptor.
-///
-/// # Safety
-/// This could be unsafe, since we don't know what happens if we read the register, while the
-/// peripheral is powered down.
-pub unsafe fn last_rx_descriptor() -> Option<NonNull<DmaDescriptor>> {
-    NonNull::new(last_rx_descriptor_raw())
-}
-/// Enable or disable RX.
-pub unsafe fn set_rx_enabled(enabled: bool) {
-    HalWIFI::regs()
-        .rx_ctrl()
-        .modify(|_, w| w.rx_enable().bit(enabled));
-}
-/// Initialize RX.
-///
-/// This will set the base descriptor, reload the hardware descriptors and enable RX.
-///
-/// # Safety
-/// The specified pointer must point to a valid DMA descriptor, with itself and it's associated
-/// buffer in internal RAM.
-pub unsafe fn init_rx(base_descriptor: NonNull<DmaDescriptor>) {
-    set_base_rx_descriptor(Some(base_descriptor));
-    set_rx_enabled(true);
-}
-/// Disable RX.
-///
-/// This will disable RX, zero the DMA list base descriptor and reload the hardware DMA list descriptors.
-pub unsafe fn deinit_rx() {
-    set_rx_enabled(false);
-    set_base_rx_descriptor(None);
+    // RF
+
+    /// Set the radio channel.
+    ///
+    /// The channel number is not validated.
+    pub fn set_channel(&self, channel_number: u8) {
+        unsafe {
+            Self::set_mac_state(false);
+            #[cfg(nomac_channel_set)]
+            crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
+            #[cfg(not(nomac_channel_set))]
+            crate::ffi::chip_v7_set_chan(channel_number, 0);
+            disable_wifi_agc();
+            Self::set_mac_state(true);
+            enable_wifi_agc();
+        }
+    }
 }
 
 /// Convert a software slot index to the hardware slot index.

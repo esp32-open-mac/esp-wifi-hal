@@ -155,7 +155,7 @@ impl TxSlotQueue {
         }
     }
     /// Asynchronously wait for a new slot to become available.
-    pub async fn wait_for_slot(&self) -> BorrowedTxSlot {
+    pub async fn wait_for_slot(&self) -> BorrowedTxSlot<'_> {
         let slot = poll_fn(|cx| {
             self.state.lock(|rc| {
                 let mut state = rc.borrow_mut();

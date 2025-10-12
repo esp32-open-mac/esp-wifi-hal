@@ -61,7 +61,8 @@ extern crate core;
 mod crypto;
 mod dma_list;
 mod ffi;
-mod ll;
+#[doc(hidden)]
+pub mod ll;
 mod phy_init_data;
 mod rates;
 mod sync;

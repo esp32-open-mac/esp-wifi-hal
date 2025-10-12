@@ -1,5 +1,8 @@
-use crate::{ll, DefaultRawMutex};
-use core::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull};
+use crate::{
+    ll::LowLevelDriver,
+    DefaultRawMutex,
+};
+use core::{cell::RefCell, mem::MaybeUninit, ptr::NonNull};
 
 use embassy_sync::blocking_mutex;
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
@@ -28,7 +31,8 @@ const RX_BUFFER_SIZE: usize = 1600;
 pub struct WiFiResources<const BUFFER_COUNT: usize> {
     buffers: [[u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
     dma_descriptors: [MaybeUninit<DmaDescriptor>; BUFFER_COUNT],
-    dma_list: MaybeUninit<blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>>>,
+    dma_list: MaybeUninit<blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>>,
+    ll_driver: MaybeUninit<LowLevelDriver>,
 }
 impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
     /// Create new DMA resources.
@@ -38,6 +42,7 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
             buffers: [[0u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
             dma_descriptors: [MaybeUninit::uninit(); BUFFER_COUNT],
             dma_list: MaybeUninit::uninit(),
+            ll_driver: MaybeUninit::uninit(),
         }
     }
     /// Initialize the DMA resources.
@@ -46,7 +51,11 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
     /// You must ensure, that this is only used as long as the DMA list lives!
     pub(crate) unsafe fn init(
         &mut self,
-    ) -> &blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>> {
+        ll_driver: LowLevelDriver,
+    ) -> (
+        &blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>,
+        &LowLevelDriver,
+    ) {
         // We already asserted this in `Self::new`, but maybe this helps LLVM.
         assert!(self.dma_descriptors.len() >= 2);
 
@@ -79,10 +88,18 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
         let last_ptr = NonNull::from(init_iter.next().unwrap());
         let base_ptr = NonNull::from(init_iter.last().unwrap());
 
-        self.dma_list
+        let ll_driver = self.ll_driver.write(ll_driver);
+        let dma_list = self
+            .dma_list
             .write(blocking_mutex::Mutex::new(RefCell::new(DMAList::new(
-                base_ptr, last_ptr,
-            ))))
+                base_ptr,
+                last_ptr,
+                unsafe {
+                    core::mem::transmute::<&LowLevelDriver, &'static LowLevelDriver>(ll_driver)
+                },
+            ))));
+
+        (dma_list, ll_driver)
     }
 }
 impl<const BUFFER_COUNT: usize> Default for WiFiResources<BUFFER_COUNT> {
@@ -91,45 +108,48 @@ impl<const BUFFER_COUNT: usize> Default for WiFiResources<BUFFER_COUNT> {
     }
 }
 
-pub struct DMAList<'res> {
+pub struct DMAList {
     rx_chain_ptrs: Option<(NonNull<DmaDescriptor>, NonNull<DmaDescriptor>)>,
-    _phantom: PhantomData<&'res ()>,
+    ll_driver: &'static LowLevelDriver,
 }
-impl<'res> DMAList<'res> {
+impl DMAList {
     /// Instantiate a new DMAList.
-    fn new(base_ptr: NonNull<DmaDescriptor>, last_ptr: NonNull<DmaDescriptor>) -> Self {
-        unsafe { ll::init_rx(base_ptr) };
+    fn new(
+        base_ptr: NonNull<DmaDescriptor>,
+        last_ptr: NonNull<DmaDescriptor>,
+        ll_driver: &'static LowLevelDriver,
+    ) -> Self {
+        ll_driver.set_base_rx_descriptor(base_ptr);
 
         trace!("Initialized DMA list.");
-        Self::log_stats();
         Self {
             rx_chain_ptrs: Some((base_ptr, last_ptr)),
-            _phantom: PhantomData,
+            ll_driver,
         }
     }
     /// Sets [Self::rx_chain_ptrs], with the `dma_list_descriptor` at the base.
     ///
     /// This will automatically reload the RX descriptors.
     fn set_rx_chain_base(&mut self, base_descriptor: Option<NonNull<DmaDescriptor>>) {
-        match (&mut self.rx_chain_ptrs, base_descriptor) {
-            // If neither the DMA list nor the DMA list descriptor is empty, we simply set rx_chain_begin to dma_list_desciptor.
-            (Some(rx_chain_ptrs), Some(dma_list_descriptor)) => {
-                rx_chain_ptrs.0 = dma_list_descriptor;
+        if let Some(base_descriptor) = base_descriptor {
+            if let Some(mut rx_chain_ptrs) = self.rx_chain_ptrs {
+                // If neither the DMA list nor the DMA list descriptor is empty, we simply set rx_chain_begin to dma_list_desciptor.
+                rx_chain_ptrs.0 = base_descriptor;
+            } else {
+                // The DMA list is currently empty. Therefore the dma_list_descriptor is now first and last.
+                self.rx_chain_ptrs = Some((base_descriptor, base_descriptor));
             }
+
+            self.ll_driver.set_base_rx_descriptor(base_descriptor);
+        } else {
             // If the DMA list isn't empty, but we want to set it to empty.
-            (Some(_), None) => self.rx_chain_ptrs = None,
-            // The DMA list is currently empty. Therefore the dma_list_descriptor is now first and last.
-            (None, Some(dma_list_descriptor)) => {
-                self.rx_chain_ptrs = Some((dma_list_descriptor, dma_list_descriptor))
-            }
-            _ => {}
-        }
-        unsafe {
-            ll::set_base_rx_descriptor(base_descriptor);
+            self.rx_chain_ptrs = None;
+
+            self.ll_driver.clear_base_rx_descriptor();
         }
     }
     /// Take the first [DMAListItem] out of the list.
-    pub fn take_first(&mut self) -> Option<&'res mut DmaDescriptor> {
+    pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
         trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
         if first.flags.suc_eof() && first.len() >= size_of::<wifi_pkt_rx_ctrl_t>() {
@@ -178,10 +198,12 @@ impl<'res> DMAList<'res> {
             unsafe {
                 last_ptr.as_mut().set_next(Some(dma_list_descriptor));
 
-                ll::reload_hw_rx_descriptors();
+                self.ll_driver.reload_hw_rx_descriptors();
 
-                if ll::next_rx_descriptor_raw() as u32 != 0x3ff00000
-                    || ll::last_rx_descriptor().map(NonNull::as_ptr) == Some(dma_list_descriptor)
+                if self.ll_driver.next_rx_descriptor().map(NonNull::as_ptr)
+                    != Some(0x3ff00000 as *mut _)
+                    || self.ll_driver.last_rx_descriptor().map(NonNull::as_ptr)
+                        == Some(dma_list_descriptor)
                 {
                     *last_ptr = NonNull::new(dma_list_descriptor).unwrap();
                     return;
@@ -191,22 +213,21 @@ impl<'res> DMAList<'res> {
         // If the DMA list is empty, we make this descriptor the base.
         self.set_rx_chain_base(NonNull::new(dma_list_descriptor));
     }
-    pub fn log_stats() {
+    /// Log the stats about the DMA list.
+    pub fn log_stats(&self) {
         #[allow(unused)]
         unsafe {
             let (rx_next, rx_last) = (
-                ll::next_rx_descriptor_raw() as u32,
-                ll::last_rx_descriptor_raw() as u32,
+                self.ll_driver.next_rx_descriptor().map(|non_null| non_null.as_ptr()),
+                self.ll_driver.last_rx_descriptor().map(|non_null| non_null.as_ptr()),
             );
             trace!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
         }
     }
 }
-impl Drop for DMAList<'_> {
+impl Drop for DMAList {
     fn drop(&mut self) {
-        unsafe {
-            ll::deinit_rx();
-        }
+        self.ll_driver.stop_rx();
     }
 }
-unsafe impl Send for DMAList<'_> {}
+unsafe impl Send for DMAList {}

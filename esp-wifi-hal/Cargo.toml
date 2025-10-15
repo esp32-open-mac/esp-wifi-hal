@@ -51,6 +51,6 @@ overflow-checks = false
 esp32 = ["dep:esp32", "esp-hal/esp32", "esp-wifi-sys/esp32", "esp-phy/esp32"]
 esp32s2 = ["dep:esp32s2", "esp-hal/esp32s2", "esp-wifi-sys/esp32s2", "esp-phy/esp32s2"]
 
-defmt = ["dep:defmt", "defmt-or-log/defmt"]
-log = ["dep:log", "defmt-or-log/log"]
+defmt = ["dep:defmt", "defmt-or-log/defmt", "esp-phy/defmt"]
+log = ["dep:log", "defmt-or-log/log", "esp-phy/log-04"]
 critical_section = []

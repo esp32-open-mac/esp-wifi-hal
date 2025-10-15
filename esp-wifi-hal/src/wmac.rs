@@ -8,23 +8,24 @@ use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{
     esp_pac::wifi::TX_SLOT_CONFIG,
-    ll::{self, KeySlotParameters, LowLevelDriver, RxFilterBank, WiFiInterrupt},
+    ll::{self, KeySlotParameters, LowLevelDriver, RxFilterBank, TxStatus, WiFiInterrupt},
     rates::RATE_LUT,
     sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
     CipherParameters, WiFiRate, INTERFACE_COUNT, KEY_SLOT_COUNT,
 };
 use embassy_sync::blocking_mutex::{self};
 use esp_hal::{
-     dma::{DmaDescriptor, Owner}, handler, interrupt::CpuInterrupt, peripherals::{ADC2, WIFI},
+    dma::{DmaDescriptor, Owner},
+    handler,
+    interrupt::CpuInterrupt,
+    peripherals::{ADC2, WIFI},
 };
-use esp_wifi_sys::include::{
-    wifi_pkt_rx_ctrl_t,
-};
+use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 use macro_bits::{bit, check_bit};
 
 use crate::{
     dma_list::DMAList,
-    ffi::{tx_pwctrl_background},
+    ffi::tx_pwctrl_background,
     sync::{SignalQueue, TxSlotStateSignal},
     DefaultRawMutex, WiFiResources,
 };
@@ -51,14 +52,14 @@ fn mac_handler() {
     }
     if cause.tx_success() {
         unsafe {
-            ll::process_tx_completions(|slot| {
+            LowLevelDriver::process_tx_status(TxStatus::Success, |slot| {
                 WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Done);
             })
         };
     }
     if cause.tx_timeout() {
         unsafe {
-            ll::process_tx_timeouts(|slot| {
+            LowLevelDriver::process_tx_status(TxStatus::Timeout, |slot| {
                 WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Timeout);
                 ll::set_tx_slot_validity(slot, false);
                 ll::set_tx_slot_enabled(slot, false);
@@ -67,7 +68,7 @@ fn mac_handler() {
     }
     if cause.tx_collision() {
         unsafe {
-            ll::process_tx_collisions(|slot| {
+            LowLevelDriver::process_tx_status(TxStatus::Collision, |slot| {
                 WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Collision);
                 ll::set_tx_slot_validity(slot, false);
                 ll::set_tx_slot_enabled(slot, false);
@@ -148,12 +149,14 @@ impl BorrowedBuffer<'_> {
         self.padded_buffer()
             .get(..self.unpadded_buffer_len())
             .unwrap_or_else(|| {
-                defmt_or_log::panic!(
-                    "Corrected len: {} Padded len: {} SIG len: {}",
+                defmt_or_log::warn!(
+                    "Buffer was shorter then calculated length. Corrected len: {} Padded len: {} SIG len: {} Header: {:02x?}",
                     self.unpadded_buffer_len(),
                     self.dma_descriptor.len(),
-                    self.raw_header().sig_len()
+                    self.raw_header().sig_len(),
+                    &self.padded_buffer()[..Self::RX_CONTROL_HEADER_LENGTH]
                 );
+                self.padded_buffer()
             })
     }
     /// Same as [Self::raw_buffer], but mutable.
@@ -188,7 +191,7 @@ impl BorrowedBuffer<'_> {
     }
     /// The time at which the packet was received in µs.
     pub fn timestamp(&self) -> u32 {
-        u32::from_le_bytes(self.header_buffer()[12..16].try_into().unwrap())
+        self.raw_header().timestamp()
     }
     /// The time the packet was received, corrected for the difference between MAC and system
     /// clock.
@@ -337,10 +340,18 @@ impl<'res> WiFi<'res> {
         trace!("Initializing WiFi.");
         let ll_driver = LowLevelDriver::new(wifi);
 
-        ll_driver.configure_interrupt(WiFiInterrupt::Mac, CpuInterrupt::Interrupt0LevelPriority1, mac_handler);
+        ll_driver.configure_interrupt(
+            WiFiInterrupt::Mac,
+            CpuInterrupt::Interrupt0LevelPriority1,
+            mac_handler,
+        );
 
         #[cfg(pwr_interrupt_present)]
-        ll_driver.configure_interrupt(WiFiInterrupt::Pwr, CpuInterrupt::Interrupt2LevelPriority1, pwr_handler);
+        ll_driver.configure_interrupt(
+            WiFiInterrupt::Pwr,
+            CpuInterrupt::Interrupt2LevelPriority1,
+            pwr_handler,
+        );
 
         let (dma_list, ll_driver) = unsafe { wifi_resources.init(ll_driver) };
 
@@ -667,7 +678,7 @@ impl<'res> WiFi<'res> {
     pub fn set_filter_bssid_check(&self, interface: usize, enabled: bool) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .modify(|_, w| w.bssid_check().bit(enabled));
         Ok(())
     }
@@ -678,7 +689,7 @@ impl<'res> WiFi<'res> {
     pub fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .write(|w| unsafe { w.bits(val) });
         Ok(())
     }
@@ -688,7 +699,7 @@ impl<'res> WiFi<'res> {
     /// something else than that, you probably want to use one of the other functions.
     pub fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
         Self::validate_interface(interface)?;
-        Ok(WIFI::regs().interface_rx_control(interface).read().bits())
+        Ok(WIFI::regs().filter_control(interface).read().bits())
     }
     /// Configure the filter.
     pub fn set_filter(
@@ -699,9 +710,12 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
 
-        self.ll_driver.set_filter_address(interface, filter_bank, &address);
-        self.ll_driver.set_filter_mask(interface, filter_bank, &[0xff; 6]);
-        self.ll_driver.set_filter_enable(interface, filter_bank, true);
+        self.ll_driver
+            .set_filter_address(interface, filter_bank, &address);
+        self.ll_driver
+            .set_filter_mask(interface, filter_bank, &[0xff; 6]);
+        self.ll_driver
+            .set_filter_enable(interface, filter_bank, true);
 
         Ok(())
     }
@@ -713,7 +727,7 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .modify(|_, w| match scanning_mode {
                 ScanningMode::Disabled => {
                     w.scan_mode().clear_bit().data_and_mgmt_mode().clear_bit()
@@ -739,9 +753,7 @@ impl<'res> WiFi<'res> {
     ///
     /// If `key_slot` is larger than or equal to [WiFi::KEY_SLOT_COUNT], an error will be returned.
     pub fn key_slot_in_use(&self, key_slot: usize) -> WiFiResult<bool> {
-        Self::validate_key_slot(key_slot).map(|_| {
-            self.ll_driver.key_slot_enabled(key_slot)
-        })
+        Self::validate_key_slot(key_slot).map(|_| self.ll_driver.key_slot_enabled(key_slot))
     }
     /// Set a cryptographic key.
     ///

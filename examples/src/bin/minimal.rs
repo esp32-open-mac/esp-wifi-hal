@@ -4,7 +4,7 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use examples::{common_init, embassy_init, wifi_init};
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);

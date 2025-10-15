@@ -41,10 +41,8 @@ pub fn print_key<'buf>(key: &[u8; 16], buf: &'buf mut [u8; 32]) -> &'buf str {
 }
 /// Utility to set and enable the filters.
 pub fn setup_filters(wifi: &WiFi, ra: [u8; 6], bssid: [u8; 6]) {
-    let _ = wifi.set_filter(RxFilterBank::ReceiverAddress, 0, ra, [0xff; 6]);
-    let _ = wifi.set_filter(RxFilterBank::BSSID, 0, bssid, [0xff; 6]);
-    let _ = wifi.set_filter_status(RxFilterBank::ReceiverAddress, 0, true);
-    let _ = wifi.set_filter_status(RxFilterBank::BSSID, 0, true);
+    let _ = wifi.set_filter(RxFilterBank::ReceiverAddress, 0, ra);
+    let _ = wifi.set_filter(RxFilterBank::Bssid, 0, bssid);
 }
 /// Utility to set a key, with some basic parameters.
 pub fn insert_key(
@@ -83,7 +81,7 @@ pub fn common_init() -> Peripherals {
 }
 pub fn embassy_init(timg0: TIMG0<'static>) {
     let timg0 = TimerGroup::<'static>::new(timg0);
-    esp_hal_embassy::init(timg0.timer0);
+    esp_rtos::start(timg0.timer0);
 }
 pub fn wifi_init<'a>(wifi: WIFI<'a>, adc2: ADC2<'a>) -> WiFi<'a> {
     static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();

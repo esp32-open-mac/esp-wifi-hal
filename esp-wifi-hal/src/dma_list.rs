@@ -119,7 +119,7 @@ impl DMAList {
         last_ptr: NonNull<DmaDescriptor>,
         ll_driver: &'static LowLevelDriver,
     ) -> Self {
-        ll_driver.set_base_rx_descriptor(base_ptr);
+        ll_driver.start_rx(base_ptr);
 
         trace!("Initialized DMA list.");
         Self {
@@ -218,10 +218,10 @@ impl DMAList {
         #[allow(unused)]
         unsafe {
             let (rx_next, rx_last) = (
-                self.ll_driver.next_rx_descriptor().map(|non_null| non_null.as_ptr()),
-                self.ll_driver.last_rx_descriptor().map(|non_null| non_null.as_ptr()),
+                self.ll_driver.next_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
+                self.ll_driver.last_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
             );
-            trace!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
+            trace!("DMA list: Next: {:x?} Last: {:x?}", rx_next, rx_last);
         }
     }
 }

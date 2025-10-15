@@ -63,7 +63,6 @@ mod dma_list;
 mod ffi;
 #[doc(hidden)]
 pub mod ll;
-mod phy_init_data;
 mod rates;
 mod sync;
 mod wmac;
@@ -75,7 +74,7 @@ use esp32s2 as esp_pac;
 
 pub use crypto::*;
 pub use dma_list::WiFiResources;
-pub use ll::{INTERFACE_COUNT, KEY_SLOT_COUNT};
+pub use ll::{INTERFACE_COUNT, KEY_SLOT_COUNT, RxFilterBank};
 pub use rates::*;
 pub use wmac::*;
 

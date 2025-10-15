@@ -4,17 +4,17 @@
 use core::{iter::IntoIterator, ptr::NonNull};
 
 use esp_hal::{
-    clock::{ModemClockController, PhyClockGuard},
+    clock::ModemClockController,
     dma::DmaDescriptor,
     interrupt::{self, CpuInterrupt, InterruptHandler},
     peripherals::{LPWR, WIFI as HalWIFI},
 };
-use esp_wifi_sys::include::*;
+use esp_phy::{PhyController, PhyInitGuard};
+use macro_bits::{bit, check_bit};
 
 use crate::{
     esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
     ffi::{disable_wifi_agc, enable_wifi_agc, hal_init},
-    phy_init_data::PHY_INIT_DATA_DEFAULT,
 };
 
 /// Run a reversible sequence of functions either forward or in reverse.
@@ -215,6 +215,47 @@ impl From<WiFiInterrupt> for PacInterrupt {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Status of a transmission event.
+pub enum TxStatus {
+    /// TX completed successfully.
+    Success,
+    /// A timeout occured.
+    ///
+    /// This may be related to the timeout parameter.
+    Timeout,
+    /// A collision occured.
+    ///
+    /// This might be caused by internal TX queue scheduling conflicts.
+    Collision,
+}
+impl TxStatus {
+    pub fn raw_status(&self) -> u8 {
+        let wifi = LowLevelDriver::regs();
+        (match self {
+            TxStatus::Success => wifi.txq_state().tx_complete_status().read().bits(),
+            TxStatus::Timeout => wifi.txq_state().tx_error_status().read().bits() >> 0x10,
+            TxStatus::Collision => wifi.txq_state().tx_error_status().read().bits(),
+        }) as u8
+    }
+    pub fn clear_slot_bit(&self, slot: usize) {
+        let wifi = LowLevelDriver::regs();
+        match self {
+            TxStatus::Success => wifi
+                .txq_state()
+                .tx_complete_clear()
+                .modify(|_, w| w.slot(slot as u8).set_bit()),
+            TxStatus::Timeout => wifi
+                .txq_state()
+                .tx_error_clear()
+                .modify(|_, w| w.slot_timeout(slot as u8).set_bit()),
+            TxStatus::Collision => wifi
+                .txq_state()
+                .tx_error_clear()
+                .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
+        };
+    }
+}
 
 #[cfg(any(feature = "esp32", feature = "esp32s2"))]
 /// The number of "interfaces" supported by the hardware.
@@ -240,20 +281,22 @@ pub const KEY_SLOT_COUNT: usize = 25;
 /// shared. When an index (i.e. key slot or interface) is provided, it is expected, that the input
 /// is within the valid range. If it is not, the function will panic.
 pub struct LowLevelDriver {
-    /// Prevents the PHY clock from being disabled, while the driver is running.
-    _phy_clock_guard: PhyClockGuard<'static>,
+    /// Prevents the PHY from being disabled, while the driver is running.
+    _phy_init_guard: PhyInitGuard<'static>,
 }
 impl LowLevelDriver {
+    #[doc(hidden)]
     /// Get the PAC Wi-Fi peripheral.
     ///
     /// This stops RA from doing funky shit.
-    fn regs() -> WIFI {
+    pub fn regs() -> WIFI {
         unsafe { WIFI::steal() }
     }
     /// Create a new [LowLevelDriver].
     pub fn new(_wifi: esp_hal::peripherals::WIFI<'_>) -> Self {
-        let _phy_clock_guard = unsafe { Self::init() };
-        Self { _phy_clock_guard }
+        Self {
+            _phy_init_guard: unsafe { Self::init() },
+        }
     }
 
     // Initialization
@@ -283,23 +326,6 @@ impl LowLevelDriver {
             !enable_module,
             enable_module,
         );
-    }
-    /// Initialize the PHY.
-    ///
-    /// NOTE: This is very temporary and will be replaced, as soon as `esp-phy` is released.
-    unsafe fn initialize_phy() -> PhyClockGuard<'static> {
-        let clock_guard = unsafe { HalWIFI::steal() }.enable_phy_clock();
-        let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
-        let init_data = &PHY_INIT_DATA_DEFAULT;
-        trace!("Enabling PHY.");
-        unsafe {
-            register_chipv7_phy(
-                init_data,
-                &mut cal_data as *mut _ as *mut esp_phy_calibration_data_t,
-                esp_phy_calibration_mode_t_PHY_RF_CAL_FULL,
-            );
-        }
-        clock_guard
     }
     /// Perform a full MAC reset.
     ///
@@ -389,15 +415,16 @@ impl LowLevelDriver {
     /// At the moment, this is only intended to be called upon initializing the low level driver.
     /// Reinitialization and partial PHY calibration are NOT handled at all. The effects of calling
     /// this multiple times are unknown.
-    unsafe fn init() -> PhyClockGuard<'static> {
+    unsafe fn init() -> PhyInitGuard<'static> {
         // Enable the power domain.
         unsafe {
             Self::set_module_status(true);
         }
+        let mut hal_wifi = unsafe { HalWIFI::steal() };
         // Enable the modem clock.
-        unsafe { HalWIFI::steal() }.enable_modem_clock(true);
+        hal_wifi.enable_modem_clock(true);
         // Initialize the PHY.
-        let clock_guard = unsafe { Self::initialize_phy() };
+        let phy_init_guard = hal_wifi.enable_phy();
         unsafe {
             Self::reset_mac();
             Self::set_mac_state(true);
@@ -405,7 +432,7 @@ impl LowLevelDriver {
         }
         Self::init_crypto();
 
-        clock_guard
+        phy_init_guard
     }
 
     // Interrupt handling
@@ -602,6 +629,43 @@ impl LowLevelDriver {
     }
 
     // TX
+
+    #[inline]
+    /// Process a TX status.
+    ///
+    /// The provided closure will be called for each slot, with its real index as a parameter.
+    ///
+    /// # Safety
+    /// This has to be static, so that it can be called in an ISR, but it is also expected to only
+    /// be called from there, since the Wi-Fi peripheral will have to be initialized there.
+    pub unsafe fn process_tx_status(tx_status: TxStatus, f: impl Fn(usize)) {
+        let raw_status = tx_status.raw_status();
+        (0..5)
+            .filter(|i| check_bit!(raw_status, bit!(i)))
+            .for_each(|slot| {
+                (f)(slot);
+                tx_status.clear_slot_bit(slot);
+            });
+        /*
+                match tx_status {
+                    TxStatus::Success => {
+                        let r = txq_state.tx_complete_status().read();
+                        Self::run_slot_closure(r.slot_iter(), f);
+                        txq_state.tx_complete_clear().write(|w| unsafe { w.bits(r.bits()) });
+                    }
+                    TxStatus::Timeout => {
+                        let r = txq_state.tx_error_status().read();
+                        Self::run_slot_closure(r.slot_timeout_iter(), f);
+                        txq_state.tx_error_clear().write(|w| unsafe { w.bits(r.bits() & 0x1f000000) });
+                    }
+                    TxStatus::Collision => {
+                        let r = txq_state.tx_error_status().read();
+                        Self::run_slot_closure(r.slot_collision_iter(), f);
+                        txq_state.tx_error_clear().write(|w| unsafe { w.bits(r.bits() & 0x0000001f) });
+                    }
+                }
+        */
+    }
 
     // Crypto
 
@@ -805,53 +869,4 @@ pub unsafe fn set_tx_slot_validity(slot: usize, valid: bool) {
         .tx_slot_config(hw_slot_index(slot))
         .plcp0()
         .modify(|_, w| w.slot_valid().bit(valid));
-}
-
-#[inline(always)]
-pub unsafe fn process_tx_completions(mut cb: impl FnMut(usize)) {
-    let wifi = HalWIFI::regs();
-    wifi.txq_state()
-        .tx_complete_status()
-        .read()
-        .slot_iter()
-        .enumerate()
-        .filter_map(|(slot, r)| r.bit().then_some(slot))
-        .for_each(|slot| {
-            wifi.txq_state()
-                .tx_complete_clear()
-                .modify(|_, w| w.slot(slot as u8).set_bit());
-            (cb)(slot);
-        });
-}
-#[inline(always)]
-pub unsafe fn process_tx_timeouts(mut cb: impl FnMut(usize)) {
-    let wifi = HalWIFI::regs();
-    wifi.txq_state()
-        .tx_error_status()
-        .read()
-        .slot_timeout_iter()
-        .enumerate()
-        .filter_map(|(slot, r)| r.bit().then_some(slot))
-        .for_each(|slot| {
-            wifi.txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_timeout(slot as u8).set_bit());
-            (cb)(slot);
-        });
-}
-#[inline(always)]
-pub unsafe fn process_tx_collisions(mut cb: impl FnMut(usize)) {
-    let wifi = HalWIFI::regs();
-    wifi.txq_state()
-        .tx_error_status()
-        .read()
-        .slot_collision_iter()
-        .enumerate()
-        .filter_map(|(slot, r)| r.bit().then_some(slot))
-        .for_each(|slot| {
-            wifi.txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_collision(slot as u8).set_bit());
-            (cb)(slot);
-        });
 }

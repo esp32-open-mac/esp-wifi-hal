@@ -61,7 +61,6 @@ extern crate core;
 mod crypto;
 mod dma_list;
 mod ffi;
-#[doc(hidden)]
 pub mod ll;
 mod rates;
 mod sync;

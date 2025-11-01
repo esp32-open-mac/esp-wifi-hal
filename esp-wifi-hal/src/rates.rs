@@ -37,8 +37,6 @@ pub enum WiFiRate {
     PhyRate2ML = 0x01,
     PhyRate5ML = 0x02,
     PhyRate11ML = 0x03,
-    /// This rate is currently unstable for whatever reason.
-    PhyRate1MS = 0x04,
     PhyRate2MS = 0x05,
     PhyRate5MS = 0x06,
     PhyRate11MS = 0x07,
@@ -68,10 +66,12 @@ pub enum WiFiRate {
     PhyRateMCS7SGI = 0x1f,
 }
 impl WiFiRate {
+    #[inline]
     /// Check if the rate is using the HT PHY.
     pub const fn is_ht(&self) -> bool {
         *self as u8 >= 0x10
     }
+    #[inline]
     /// Check if the rate uses a short guard interval.
     pub const fn is_short_gi(&self) -> bool {
         *self as u8 >= 0x18
@@ -86,6 +86,16 @@ impl WiFiRate {
             _ => PhyMode::Ht,
         }
     }
+    /// Get the parameters of an HT rate.
+    ///
+    /// The returned tuple is the MCS index and a [bool] indicating short GI.
+    pub const fn ht_paramters(&self) -> Option<(u8, bool)> {
+        if self.is_ht() {
+            Some((*self as u8, self.is_short_gi()))
+        } else {
+            None
+        }
+    }
 }
 // This is a lookup-table for matching index->WiFiRate.
 pub(crate) static RATE_LUT: &[WiFiRate] = &[
@@ -93,7 +103,6 @@ pub(crate) static RATE_LUT: &[WiFiRate] = &[
     WiFiRate::PhyRate2ML,
     WiFiRate::PhyRate5ML,
     WiFiRate::PhyRate11ML,
-    WiFiRate::PhyRate1MS,
     WiFiRate::PhyRate2MS,
     WiFiRate::PhyRate5MS,
     WiFiRate::PhyRate11MS,

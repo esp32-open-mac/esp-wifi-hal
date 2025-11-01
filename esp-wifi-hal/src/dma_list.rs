@@ -1,12 +1,10 @@
 use crate::{
-    ll::LowLevelDriver,
-    DefaultRawMutex,
+    ll::LowLevelDriver, BorrowedBuffer, DefaultRawMutex
 };
 use core::{cell::RefCell, mem::MaybeUninit, ptr::NonNull};
 
 use embassy_sync::blocking_mutex;
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
-use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 
 trait DmaDescriptorExt {
     fn next(&mut self) -> Option<&mut DmaDescriptor>;
@@ -98,7 +96,6 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
                     core::mem::transmute::<&LowLevelDriver, &'static LowLevelDriver>(ll_driver)
                 },
             ))));
-
         (dma_list, ll_driver)
     }
 }
@@ -108,6 +105,7 @@ impl<const BUFFER_COUNT: usize> Default for WiFiResources<BUFFER_COUNT> {
     }
 }
 
+/// The receive DMA list.
 pub struct DMAList {
     rx_chain_ptrs: Option<(NonNull<DmaDescriptor>, NonNull<DmaDescriptor>)>,
     ll_driver: &'static LowLevelDriver,
@@ -132,7 +130,8 @@ impl DMAList {
     /// This will automatically reload the RX descriptors.
     fn set_rx_chain_base(&mut self, base_descriptor: Option<NonNull<DmaDescriptor>>) {
         if let Some(base_descriptor) = base_descriptor {
-            if let Some(mut rx_chain_ptrs) = self.rx_chain_ptrs {
+            // This needs to use `as_mut`, since otherwise we modify a copy of the tuple.
+            if let Some(rx_chain_ptrs) = self.rx_chain_ptrs.as_mut() {
                 // If neither the DMA list nor the DMA list descriptor is empty, we simply set rx_chain_begin to dma_list_desciptor.
                 rx_chain_ptrs.0 = base_descriptor;
             } else {
@@ -152,10 +151,10 @@ impl DMAList {
     pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
         trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
-        if first.flags.suc_eof() && first.len() >= size_of::<wifi_pkt_rx_ctrl_t>() {
+        if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
             let next = first.next();
             if next.is_none() {
-                trace!("Next was none.");
+                warn!("Next was none.");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
             first.set_owner(Owner::Cpu);
@@ -221,7 +220,7 @@ impl DMAList {
                 self.ll_driver.next_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
                 self.ll_driver.last_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
             );
-            trace!("DMA list: Next: {:x?} Last: {:x?}", rx_next, rx_last);
+            info!("DMA list: Next: {:x?} Last: {:x?}", rx_next, rx_last);
         }
     }
 }

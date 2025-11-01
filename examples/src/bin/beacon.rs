@@ -30,7 +30,7 @@ async fn main(_spawner: Spawner) {
     embassy_init(peripherals.TIMG0);
     let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let _ = wifi.set_channel(6);
+    let _ = wifi.set_channel(1);
     let module_mac_address = Efuse::read_base_mac_address();
     let module_mac_address = MACAddress::new(module_mac_address);
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));

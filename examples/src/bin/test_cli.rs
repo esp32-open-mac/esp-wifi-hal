@@ -23,7 +23,7 @@ use esp_hal::{
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{BorrowedBuffer, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate, INTERFACE_COUNT};
+use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate, INTERFACE_COUNT};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
@@ -254,6 +254,7 @@ fn dump_command(wifi: &WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let integer_nf = (nf_qdbm & !0b11) / 4;
     let _ = writeln!(uart0_tx, "Noise floor: {integer_nf}.{decimal_nf} dBm");
     }
+    wifi.log_dma_list_stats();
 }
 fn parse_mac(mac_str: &str) -> Option<MACAddress> {
     let mut mac = [0x00u8; 6];

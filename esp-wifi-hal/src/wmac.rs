@@ -1,16 +1,15 @@
 use core::{
     cell::RefCell,
-    mem::forget,
-    ops::Deref,
     pin::{pin, Pin},
 };
 use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{
-    esp_pac::wifi::TX_SLOT_CONFIG,
-    ll::{self, KeySlotParameters, LowLevelDriver, RxFilterBank, TxStatus, WiFiInterrupt},
+    ll::{
+        EdcaAccessCategory, HardwareTxQueue, HardwareTxResult, KeySlotParameters, LowLevelDriver, RxFilterBank, TxSlotStatus, WiFiInterrupt
+    },
     rates::RATE_LUT,
-    sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
+    sync::{DropGuard, TxSlotQueue},
     CipherParameters, WiFiRate, INTERFACE_COUNT, KEY_SLOT_COUNT,
 };
 use embassy_sync::blocking_mutex::{self};
@@ -25,17 +24,15 @@ use macro_bits::{bit, check_bit};
 
 use crate::{
     dma_list::DMAList,
-    ffi::tx_pwctrl_background,
-    sync::{SignalQueue, TxSlotStateSignal},
+    sync::{HardwareTxResultSignal, SignalQueue},
     DefaultRawMutex, WiFiResources,
 };
 
 static WIFI_RX_SIGNAL_QUEUE: SignalQueue = SignalQueue::new();
 
-#[allow(clippy::declare_interior_mutable_const)]
-const EMPTY_SLOT: TxSlotStateSignal = TxSlotStateSignal::new();
-/// These are for knowing, when transmission has finished.
-static WIFI_TX_SLOTS: [TxSlotStateSignal; 5] = [EMPTY_SLOT; 5];
+/// These are for knowing, when transmission has finished, and with which result.
+static HARDWARE_TX_RESULT_SIGNALS: [HardwareTxResultSignal; 5] =
+    [const { HardwareTxResultSignal::new() }; 5];
 
 // We run tx_pwctrl_background every four transmissions.
 static FRAMES_SINCE_LAST_TXPWR_CTRL: AtomicU8 = AtomicU8::new(0);
@@ -52,26 +49,25 @@ fn mac_handler() {
     }
     if cause.tx_success() {
         unsafe {
-            LowLevelDriver::process_tx_status(TxStatus::Success, |slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Done);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Success, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(HardwareTxResult::Success);
             })
         };
     }
     if cause.tx_timeout() {
         unsafe {
-            LowLevelDriver::process_tx_status(TxStatus::Timeout, |slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Timeout);
-                ll::set_tx_slot_validity(slot, false);
-                ll::set_tx_slot_enabled(slot, false);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Timeout, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(HardwareTxResult::Timeout);
+                LowLevelDriver::set_tx_queue_status(queue, TxSlotStatus::Disabled);
             })
         };
     }
     if cause.tx_collision() {
         unsafe {
-            LowLevelDriver::process_tx_status(TxStatus::Collision, |slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Collision);
-                ll::set_tx_slot_validity(slot, false);
-                ll::set_tx_slot_enabled(slot, false);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Collision, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
+                    .signal(HardwareTxResult::Collision);
+                LowLevelDriver::set_tx_queue_status(queue, TxSlotStatus::Disabled);
             })
         };
     }
@@ -156,6 +152,7 @@ impl BorrowedBuffer<'_> {
                     self.raw_header().sig_len(),
                     &self.padded_buffer()[..Self::RX_CONTROL_HEADER_LENGTH]
                 );
+                self.dma_list.lock(|dma_list| dma_list.borrow().log_stats());
                 self.padded_buffer()
             })
     }
@@ -288,7 +285,7 @@ pub struct TxParameters {
     /// The maximum amount of time an ACK can take to arrive.
     pub ack_timeout: usize,
     /// The key slot to be used for encryption.
-    pub key_slot: Option<usize>,
+    pub key_slot: Option<u8>,
 }
 impl Default for TxParameters {
     fn default() -> Self {
@@ -396,122 +393,67 @@ impl<'res> WiFi<'res> {
             dma_descriptor: dma_list_item,
         }
     }
+    /// Wait for TX to complete on a queue.
+    async fn wait_tx_done(&self, queue: HardwareTxQueue) -> WiFiResult<()> {
+        match HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
+            .wait()
+            .await
+        {
+            HardwareTxResult::Success => Ok(()),
+            HardwareTxResult::Timeout => Err(WiFiError::TxTimeout),
+            HardwareTxResult::Collision => Err(WiFiError::TxCollision),
+        }
+    }
     /// Set the packet for transmission.
     async fn transmit_internal(
         &self,
         dma_list_item: Pin<&DmaDescriptor>,
         tx_parameters: &TxParameters,
         duration: u16,
-        slot: &BorrowedTxSlot<'_>,
+        queue: HardwareTxQueue,
         ack_for_interface: Option<usize>,
     ) -> WiFiResult<()> {
-        let length = dma_list_item.len();
-        let reversed_slot = 4 - slot.deref();
-
         let wifi = WIFI::regs();
 
-        let tx_slot_config = wifi.tx_slot_config(reversed_slot);
-        tx_slot_config
-            .config()
-            .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
+        let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
 
-        tx_slot_config.plcp0().modify(|_, w| unsafe {
-            w.dma_addr()
-                .bits(dma_list_item.get_ref() as *const _ as u32)
-                .wait_for_ack()
-                .bit(ack_for_interface.is_some())
+        self.ll_driver.set_channel_access_parameters(queue, tx_parameters.ack_timeout, 0, 0);
+        self.ll_driver
+            .set_plcp0(queue, dma_list_item, ack_for_interface.is_some());
+        self.ll_driver.set_plcp1(
+            queue,
+            tx_parameters.rate,
+            dma_list_item.len(),
+            ack_for_interface.unwrap_or_default(),
+            tx_parameters.key_slot,
+        );
+        self.ll_driver.set_plcp2(queue);
+        self.ll_driver.set_duration(queue, duration);
+
+        if let Some((mcs, is_short_gi)) = tx_parameters.rate.ht_paramters() {
+            self.ll_driver
+                .set_ht_parameters(queue, mcs, is_short_gi, dma_list_item.len());
+        }
+        // This compensates for other slots being marked as done, without it being used at all.
+        hardware_tx_result_signal.reset();
+        self.ll_driver.start_tx_queue(queue);
+
+        // This will reset the slot, once the drop guard goes out of scope, or the future is
+        // dropped.
+        let tx_done_wait_drop_guard = DropGuard::new(|| {
+            self.ll_driver.tx_done(queue);
+            hardware_tx_result_signal.reset();
         });
-
-        let rate = tx_parameters.rate;
-
-        wifi.plcp1(reversed_slot).write(|w| unsafe {
-            let w = if let Some(interface) = ack_for_interface {
-                w.interface_id().bits(interface as u8)
-            } else {
-                w
+        // We wait for the transmission to complete here.
+        self.wait_tx_done(queue).await.inspect(|_| {
+            if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
+                self.ll_driver.run_power_control();
+                FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
             }
-            .len()
-            .bits(length as u16)
-            .is_80211_n()
-            .bit(rate.is_ht())
-            .rate()
-            .bits(rate as u8);
-            if let Some(key_slot) = tx_parameters.key_slot {
-                w.key_slot_id().bits(key_slot as u8)
-            } else {
-                w
-            }
-        });
-        wifi.plcp2(reversed_slot).write(|w| w.unknown().bit(true));
-        let duration = duration as u32;
-        wifi.duration(reversed_slot)
-            .write(|w| unsafe { w.bits(duration | (duration << 0x10)) });
-        if rate.is_ht() {
-            wifi.ht_sig(reversed_slot).write(|w| unsafe {
-                w.bits(
-                    (rate as u32 & 0b111)
-                        | ((length as u32 & 0xffff) << 8)
-                        | (0b111 << 24)
-                        | ((rate.is_short_gi() as u32) << 31),
-                )
-            });
-            wifi.ht_unknown(reversed_slot)
-                .write(|w| unsafe { w.length().bits(length as u32 | 0x50000) });
-        }
-        // This also compensates for other slots being marked as done, without it being used at
-        // all.
-        WIFI_TX_SLOTS[**slot].reset();
-        unsafe {
-            ll::set_tx_slot_validity(**slot, true);
-            ll::set_tx_slot_enabled(**slot, true);
-        }
+        })?;
+        tx_done_wait_drop_guard.defuse();
 
-        // Since this is the first and only await point, all the transmit parameters will have been
-        // set on the first poll. If the future gets dropped after the first poll, this would leave
-        // the slot in an invalid state, so we use this construction to reset the slot in that
-        // case.
-        struct CancelOnDrop<'a, 'b> {
-            tx_slot_config: &'a TX_SLOT_CONFIG,
-            slot: &'a BorrowedTxSlot<'b>,
-        }
-        impl CancelOnDrop<'_, '_> {
-            async fn wait_for_tx_complete(self) -> WiFiResult<()> {
-                // Wait for the hardware to confirm transmission.
-                let res = WIFI_TX_SLOTS[**self.slot].wait().await;
-                // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
-                self.tx_slot_config.plcp0().reset();
-                let res = match res {
-                    TxSlotStatus::Done => {
-                        if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
-                            unsafe { tx_pwctrl_background(1, 0) };
-                            FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
-                        }
-                        Ok(())
-                    }
-                    TxSlotStatus::Collision => Err(WiFiError::TxCollision),
-                    TxSlotStatus::Timeout => Err(WiFiError::TxTimeout),
-                };
-                WIFI_TX_SLOTS[**self.slot].reset();
-                forget(self);
-                res
-            }
-        }
-        impl Drop for CancelOnDrop<'_, '_> {
-            fn drop(&mut self) {
-                unsafe {
-                    ll::set_tx_slot_validity(**self.slot, false);
-                    ll::set_tx_slot_enabled(**self.slot, false);
-                }
-                WIFI_TX_SLOTS[**self.slot].reset();
-            }
-        }
-        let cancel_on_drop = CancelOnDrop {
-            tx_slot_config,
-            slot,
-        };
-        cancel_on_drop.wait_for_tx_complete().await?;
-
-        match wifi.pmd(reversed_slot).read().bits() >> 0xc {
+        match wifi.pmd(queue.hardware_slot()).read().bits() >> 0xc {
             1 => Err(WiFiError::RtsTimeout),
             2 => Err(WiFiError::CtsTimeout),
             5 => Err(WiFiError::AckTimeout),
@@ -604,7 +546,7 @@ impl<'res> WiFi<'res> {
                     dma_descriptor_ref,
                     tx_parameters,
                     duration,
-                    &slot,
+                    HardwareTxQueue::from_hardware_slot(4 - *slot).unwrap(),
                     ack_for_interface,
                 )
                 .await;

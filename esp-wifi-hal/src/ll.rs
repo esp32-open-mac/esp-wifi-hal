@@ -1,7 +1,11 @@
 //! Low Level functions.
 //!
 //! All functions in this module are unsafe, since their effect may be very context dependent.
-use core::{iter::IntoIterator, ptr::NonNull};
+use core::{
+    iter::IntoIterator,
+    pin::Pin,
+    ptr::{with_exposed_provenance_mut, NonNull},
+};
 
 use esp_hal::{
     clock::ModemClockController,
@@ -14,7 +18,8 @@ use macro_bits::{bit, check_bit};
 
 use crate::{
     esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
-    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init},
+    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
+    WiFiRate,
 };
 
 /// Run a reversible sequence of functions either forward or in reverse.
@@ -185,7 +190,7 @@ interrupt_cause_struct! {
         ///
         /// NOTE: This is an unconfirmed assumption.
         tbtt => [@chip(esp32s2) 0x1e],
-        // TODO: No idea.
+        /// We don't know them meaning of this yet.
         tsf_timer => [@chip(esp32s2) 0x1e0]
     }
 }
@@ -216,8 +221,10 @@ impl From<WiFiInterrupt> for PacInterrupt {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Status of a transmission event.
-pub enum TxStatus {
+/// Result of the transmission.
+///
+/// This is separate from the MAC TX result, which accounts for ACK timeouts etc.
+pub enum HardwareTxResult {
     /// TX completed successfully.
     Success,
     /// A timeout occured.
@@ -229,31 +236,217 @@ pub enum TxStatus {
     /// This might be caused by internal TX queue scheduling conflicts.
     Collision,
 }
-impl TxStatus {
-    pub fn raw_status(&self) -> u8 {
+impl HardwareTxResult {
+    /// Get raw transmission status bits.
+    fn raw_status(&self) -> u8 {
         let wifi = LowLevelDriver::regs();
         (match self {
-            TxStatus::Success => wifi.txq_state().tx_complete_status().read().bits(),
-            TxStatus::Timeout => wifi.txq_state().tx_error_status().read().bits() >> 0x10,
-            TxStatus::Collision => wifi.txq_state().tx_error_status().read().bits(),
+            HardwareTxResult::Success => wifi.txq_state().tx_complete_status().read().bits(),
+            HardwareTxResult::Timeout => wifi.txq_state().tx_error_status().read().bits() >> 0x10,
+            HardwareTxResult::Collision => wifi.txq_state().tx_error_status().read().bits(),
         }) as u8
     }
-    pub fn clear_slot_bit(&self, slot: usize) {
+    /// Clear slot transmission status bit.
+    fn clear_slot_bit(&self, slot: usize) {
         let wifi = LowLevelDriver::regs();
         match self {
-            TxStatus::Success => wifi
+            HardwareTxResult::Success => wifi
                 .txq_state()
                 .tx_complete_clear()
                 .modify(|_, w| w.slot(slot as u8).set_bit()),
-            TxStatus::Timeout => wifi
+            HardwareTxResult::Timeout => wifi
                 .txq_state()
                 .tx_error_clear()
                 .modify(|_, w| w.slot_timeout(slot as u8).set_bit()),
-            TxStatus::Collision => wifi
+            HardwareTxResult::Collision => wifi
                 .txq_state()
                 .tx_error_clear()
                 .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
         };
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Status of the TX slot.
+pub enum TxSlotStatus {
+    /// The slot is currently disabled and the data in it may be invalid.
+    Disabled,
+    /// The data in the slot is valid, but the slot is not marked as ready yet.
+    Valid,
+    /// The data in the slot is valid and it is ready for transmission.
+    Ready,
+}
+impl TxSlotStatus {
+    /// Is the data in the slot valid.
+    fn valid(&self) -> bool {
+        *self != Self::Disabled
+    }
+    /// Is the slot enabled for transmission.
+    fn enabled(&self) -> bool {
+        *self == Self::Ready
+    }
+}
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Controls which control frames pass the filter.
+pub struct ControlFrameFilterConfig {
+    /// Control frame wrapper
+    pub control_wrapper: bool,
+    /// Block ACK request (BAR)
+    pub block_ack_request: bool,
+    /// Block ACK (BA)
+    pub block_ack: bool,
+    /// PS-Poll
+    pub ps_poll: bool,
+    /// Request-to-send (RTS)
+    pub rts: bool,
+    /// Clear-to-send (CTS)
+    pub cts: bool,
+    /// ACK
+    pub ack: bool,
+    /// Control frame end
+    pub cf_end: bool,
+    /// Control frame end and ACK
+    pub cf_end_cf_ack: bool,
+}
+impl ControlFrameFilterConfig {
+    /// Disable reception of all control frames.
+    pub fn none() -> Self {
+        Self::default()
+    }
+    /// Receive all control frames.
+    pub fn all() -> Self {
+        Self {
+            control_wrapper: true,
+            block_ack_request: true,
+            block_ack: true,
+            ps_poll: true,
+            rts: true,
+            cts: true,
+            ack: true,
+            cf_end: true,
+            cf_end_cf_ack: true,
+        }
+    }
+}
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The EDCA access category.
+///
+/// It maps the EDCA access category to the hardware TX slot number.
+pub enum EdcaAccessCategory {
+    /// BA-AC
+    Background = 1,
+    #[default]
+    /// BE-AC
+    BestEffort = 2,
+    /// VI-AC
+    Video = 3,
+    /// VO-AC
+    Voice = 4,
+}
+impl EdcaAccessCategory {
+    #[inline]
+    /// Get the IEEE 802.11 Access Category Index (ACI).
+    pub const fn access_category_index(&self) -> usize {
+        match *self {
+            Self::Background => 1,
+            Self::BestEffort => 0,
+            Self::Video => 2,
+            Self::Voice => 3,
+        }
+    }
+    #[inline]
+    /// Convert the Access Category Index (ACI) into our AC type.
+    pub const fn from_access_category_index(access_category_index: usize) -> Option<Self> {
+        Some(match access_category_index {
+            1 => Self::Background,
+            0 => Self::BestEffort,
+            2 => Self::Video,
+            3 => Self::Voice,
+            _ => return None,
+        })
+    }
+    #[inline]
+    /// Get the hardware slot number.
+    ///
+    /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
+    /// slots in ascending address order (i.e. slot 0 registers have the lowest addresses), not
+    /// descending order (i.e. slot 0 register have the highest addresses), which is used in the
+    /// proprietary stack. This makes no difference in practice, other than being subjectively less
+    /// confusing.
+    pub const fn hardware_slot(&self) -> usize {
+        *self as usize
+    }
+    #[inline]
+    /// Get the EDCA queue from the slot number.
+    ///
+    /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
+    /// slots in ascending address order (i.e. slot 0 registers have the lowest addresses), not
+    /// descending order (i.e. slot 0 register have the highest addresses), which is used in the
+    /// proprietary stack. This makes no difference in practice, other than being subjectively less
+    /// confusing.
+    pub const fn from_hardware_slot(slot: usize) -> Option<Self> {
+        Some(match slot {
+            1 => Self::Background,
+            2 => Self::BestEffort,
+            3 => Self::Video,
+            4 => Self::Voice,
+            _ => return None,
+        })
+    }
+}
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The hardware TX queues.
+pub enum HardwareTxQueue {
+    #[default]
+    /// Distributed Channel Access Function
+    ///
+    /// This is the default channel access function.
+    Dcf,
+    /// Enhanced Distributed Channel Access Function
+    ///
+    /// This is the modified channel access function used for QoS traffic.
+    Edcaf(EdcaAccessCategory),
+}
+impl HardwareTxQueue {
+    #[inline]
+    /// Get the hardware slot number.
+    ///
+    /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
+    /// slots in ascending address order (i.e. slot 0 registers have the lowest addresses), not
+    /// descending order (i.e. slot 0 register have the highest addresses), which is used in the
+    /// proprietary stack. This makes no difference in practice, other than being subjectively less
+    /// confusing.
+    pub const fn hardware_slot(&self) -> usize {
+        match *self {
+            Self::Dcf => 4,
+            Self::Edcaf(access_category) => access_category.hardware_slot(),
+        }
+    }
+    #[inline]
+    /// Get the queue from the slot number.
+    ///
+    /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
+    /// slots in ascending address order (i.e. slot 0 registers have the lowest addresses), not
+    /// descending order (i.e. slot 0 register have the highest addresses), which is used in the
+    /// proprietary stack. This makes no difference in practice, other than being subjectively less
+    /// confusing.
+    pub const fn from_hardware_slot(slot: usize) -> Option<Self> {
+        if slot == 0 {
+            Some(Self::Dcf)
+        } else if let Some(edca_ac) = EdcaAccessCategory::from_hardware_slot(slot) {
+            Some(Self::Edcaf(edca_ac))
+        } else {
+            None
+        }
+    }
+    #[inline]
+    /// Is the queue an EDCA queue.
+    pub const fn is_edca(&self) -> bool {
+        matches!(self, Self::Edcaf(_))
     }
 }
 
@@ -269,6 +462,15 @@ pub const KEY_SLOT_COUNT: usize = 25;
 /// This is intended as an intermediary layer between the user facing API and the hardware, to make
 /// driver maintenance easier.
 ///
+/// # Implementation specifics
+/// ## TX
+/// ### Slot Numbering
+/// The hardware has 5 TX slots
+/// The slot numbering used for TX is aligned with that of the proprietary stack, not with the
+/// hardware. This means, that our slot numbering is reversed compared to the hardware slot
+/// registers, as this reduces confusion when reverse engineering. Our slot 0 would therefore be
+/// the highest slot in the hardware (i.e. slot 4).
+///
 /// # Safety
 /// Pretty much all of the functions on this must be used with extreme caution, as the intention is
 /// not to provide a fool proof API for the user, but a thin abstraction over the hardware, to make
@@ -282,20 +484,25 @@ pub const KEY_SLOT_COUNT: usize = 25;
 /// is within the valid range. If it is not, the function will panic.
 pub struct LowLevelDriver {
     /// Prevents the PHY from being disabled, while the driver is running.
-    _phy_init_guard: PhyInitGuard<'static>,
+    _phy_init_guard: Option<PhyInitGuard<'static>>,
 }
 impl LowLevelDriver {
     #[doc(hidden)]
     /// Get the PAC Wi-Fi peripheral.
     ///
-    /// This stops RA from doing funky shit.
+    /// This stops rust-analyzer from doing funky shit.
     pub fn regs() -> WIFI {
         unsafe { WIFI::steal() }
     }
     /// Create a new [LowLevelDriver].
     pub fn new(_wifi: esp_hal::peripherals::WIFI<'_>) -> Self {
-        Self {
-            _phy_init_guard: unsafe { Self::init() },
+        // The reason we first create the struct an then initialize it, is so that we can access
+        // methods during init.
+        unsafe {
+            Self {
+                _phy_init_guard: None,
+            }
+            .init()
         }
     }
 
@@ -306,7 +513,7 @@ impl LowLevelDriver {
     /// # Safety
     /// Enabling or disabling the Wi-Fi PD, outside of init or deinit, breaks a lot of assumptions
     /// other code makes, so take great care.
-    unsafe fn set_module_status(enable_module: bool) {
+    unsafe fn set_module_status(&self, enable_module: bool) {
         // For newer chips, we also have to handle the reset of the RF modules.
         run_reversible_function_sequence(
             [
@@ -332,7 +539,7 @@ impl LowLevelDriver {
     /// # Safety
     /// This will basically reset all state of the MAC to its defaults. Therefore it may also break
     /// assumptions made by some pieces of code.
-    unsafe fn reset_mac() {
+    unsafe fn reset_mac(&self) {
         // Perform a full reset of the Wi-Fi module.
         unsafe { HalWIFI::steal() }.reset_wifi_mac();
         // NOTE: coex_bt_high_prio would usually be here
@@ -348,7 +555,7 @@ impl LowLevelDriver {
     /// # Safety
     /// We don't really know, what exactly this does, so we only call it, where the closed source
     /// driver would.
-    unsafe fn set_mac_state(intialized: bool) {
+    unsafe fn set_mac_state(&self, intialized: bool) {
         // TODO: Figure out, what these registers do precisely and move them into the PAC.
         cfg_if::cfg_if! {
             if #[cfg(feature = "esp32")] {
@@ -385,16 +592,17 @@ impl LowLevelDriver {
     ///
     /// # Safety
     /// This should only be called during init.
-    unsafe fn setup_mac() {
+    unsafe fn setup_mac(&self) {
         // We call the proprietary blob here, to do some init for us. In the long term, this will
         // be moved to open source code. In the meantime, we do the init, that we already understand a
-        // second time in open source code
+        // second time in open source code, which should have no bad effects.
         unsafe {
             hal_init();
         }
 
         // Open source setup code
-        Self::init_crypto();
+        self.setup_filtering();
+        self.setup_crypto();
     }
     /// Initialize the hardware.
     ///
@@ -415,24 +623,22 @@ impl LowLevelDriver {
     /// At the moment, this is only intended to be called upon initializing the low level driver.
     /// Reinitialization and partial PHY calibration are NOT handled at all. The effects of calling
     /// this multiple times are unknown.
-    unsafe fn init() -> PhyInitGuard<'static> {
+    unsafe fn init(mut self) -> Self {
         // Enable the power domain.
         unsafe {
-            Self::set_module_status(true);
+            self.set_module_status(true);
         }
         let mut hal_wifi = unsafe { HalWIFI::steal() };
         // Enable the modem clock.
         hal_wifi.enable_modem_clock(true);
         // Initialize the PHY.
-        let phy_init_guard = hal_wifi.enable_phy();
+        self._phy_init_guard = Some(hal_wifi.enable_phy());
         unsafe {
-            Self::reset_mac();
-            Self::set_mac_state(true);
-            Self::setup_mac();
+            self.reset_mac();
+            self.set_mac_state(true);
+            self.setup_mac();
         }
-        Self::init_crypto();
-
-        phy_init_guard
+        self
     }
 
     // Interrupt handling
@@ -518,12 +724,13 @@ impl LowLevelDriver {
         Self::regs()
             .rx_dma_list()
             .rx_descr_base()
-            .write(|w| unsafe { w.bits(base_descriptor.as_ptr() as u32) });
+            .write(|w| unsafe { w.bits(base_descriptor.expose_provenance().get() as u32) });
         self.reload_hw_rx_descriptors();
     }
     /// Reset the base descriptor.
     pub fn clear_base_rx_descriptor(&self) {
         Self::regs().rx_dma_list().rx_descr_base().reset();
+        self.reload_hw_rx_descriptors();
     }
     /// Start receiving frames.
     ///
@@ -545,15 +752,21 @@ impl LowLevelDriver {
     }
     /// Get the base RX descriptor.
     pub fn base_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(Self::regs().rx_dma_list().rx_descr_base().read().bits() as *mut DmaDescriptor)
+        NonNull::new(with_exposed_provenance_mut(
+            Self::regs().rx_dma_list().rx_descr_base().read().bits() as usize,
+        ))
     }
     /// Get the next RX descriptor.
     pub fn next_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(Self::regs().rx_dma_list().rx_descr_next().read().bits() as *mut DmaDescriptor)
+        NonNull::new(with_exposed_provenance_mut(
+            Self::regs().rx_dma_list().rx_descr_next().read().bits() as usize,
+        ))
     }
     /// Get the last RX descriptor.
     pub fn last_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(Self::regs().rx_dma_list().rx_descr_last().read().bits() as *mut DmaDescriptor)
+        NonNull::new(with_exposed_provenance_mut(
+            Self::regs().rx_dma_list().rx_descr_last().read().bits() as usize,
+        ))
     }
 
     // RX filtering
@@ -618,6 +831,9 @@ impl LowLevelDriver {
     /// reset the [mask_high](crate::esp_pac::wifi::filter_bank::FILTER_BANK::mask_high) field,
     /// saving us one read. This also prevents keeping the slot enabled, while zeroing it, which
     /// would be invalid regardless.
+    ///
+    /// This will also enable the BSSID check, to bring the filter into a sort of ground state,
+    /// so that we can make assumptions about its behaviour when configuring other aspects.
     pub fn clear_filter_bank(&self, interface: usize, filter_bank: RxFilterBank) {
         let wifi = Self::regs();
         let filter_bank = wifi.filter_bank(filter_bank.into_bits());
@@ -627,72 +843,247 @@ impl LowLevelDriver {
         filter_bank.mask_low(interface).reset();
         filter_bank.mask_high(interface).reset();
     }
+    /// Reset the filters for an interface.
+    ///
+    /// This will clear the RX and BSSID filters, as well as enabling the BSSID check and enabling
+    /// filtering for unicast and multicast frames.
+    pub fn reset_interface_filters(&self, interface: usize) {
+        self.clear_filter_bank(interface, RxFilterBank::ReceiverAddress);
+        self.clear_filter_bank(interface, RxFilterBank::Bssid);
+
+        self.set_bssid_check_enable(interface, true);
+        self.set_filtered_address_types(interface, true, true);
+    }
+    /// Set the type of addresses that should be filtered.
+    ///
+    /// If an address type is unfiltered, frames with RAs matching that address type will pass the
+    /// filter unconditionally. Otherwise the frame will be filtered as usual.
+    pub fn set_filtered_address_types(&self, interface: usize, unicast: bool, multicast: bool) {
+        Self::regs().filter_control(interface).modify(|_, w| {
+            w.block_unicast()
+                .bit(unicast)
+                .block_multicast()
+                .bit(multicast)
+        });
+    }
+    /// Configure if the BSSID should be checked for RX filtering.
+    ///
+    /// If the BSSID check is enabled, a frame will only pass the RX filter, if its BSSID matches
+    /// the one in the filter. By default this is enabled.
+    pub fn set_bssid_check_enable(&self, interface: usize, enabled: bool) {
+        Self::regs()
+            .filter_control(interface)
+            .modify(|_, w| w.bssid_check().bit(enabled));
+    }
+    /// Configure which control frames pass the filter.
+    pub fn set_control_frame_filter(&self, interface: usize, config: &ControlFrameFilterConfig) {
+        Self::regs().rx_ctrl_filter(interface).modify(|_, w| {
+            w.control_wrapper()
+                .bit(config.control_wrapper)
+                .block_ack_request()
+                .bit(config.block_ack_request)
+                .block_ack()
+                .bit(config.block_ack)
+                .ps_poll()
+                .bit(config.ps_poll)
+                .rts()
+                .bit(config.rts)
+                .cts()
+                .bit(config.cts)
+                .ack()
+                .bit(config.ack)
+                .cf_end()
+                .bit(config.cf_end)
+                .cf_end_cf_ack()
+                .bit(config.cf_end_cf_ack)
+        });
+    }
+    #[inline]
+    /// Setup RX filtering.
+    ///
+    /// This will bring the filters to a known-good state, by enabling filtering for unicast and
+    /// multicast frames, filtering all control frames and enabling the BSSID check.
+    fn setup_filtering(&self) {
+        (0..4).for_each(|interface| {
+            self.set_filtered_address_types(interface, true, true);
+            self.set_control_frame_filter(interface, &ControlFrameFilterConfig::none());
+            self.set_bssid_check_enable(interface, true);
+        });
+    }
 
     // TX
 
     #[inline]
     /// Process a TX status.
     ///
-    /// The provided closure will be called for each slot, with its real index as a parameter.
+    /// The provided closure will be called for each slot, with the [HardwareTxQueue] as a
+    /// parameter.
     ///
     /// # Safety
     /// This has to be static, so that it can be called in an ISR, but it is also expected to only
     /// be called from there, since the Wi-Fi peripheral will have to be initialized there.
-    pub unsafe fn process_tx_status(tx_status: TxStatus, f: impl Fn(usize)) {
+    pub unsafe fn process_tx_status(tx_status: HardwareTxResult, f: impl Fn(HardwareTxQueue)) {
         let raw_status = tx_status.raw_status();
         (0..5)
             .filter(|i| check_bit!(raw_status, bit!(i)))
-            .for_each(|slot| {
-                (f)(slot);
-                tx_status.clear_slot_bit(slot);
+            .for_each(|queue| {
+                // For some reason the slot numbering needs to be reversed when working with the
+                // interrupt cause register.
+                (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
+                tx_status.clear_slot_bit(queue);
             });
-        /*
-                match tx_status {
-                    TxStatus::Success => {
-                        let r = txq_state.tx_complete_status().read();
-                        Self::run_slot_closure(r.slot_iter(), f);
-                        txq_state.tx_complete_clear().write(|w| unsafe { w.bits(r.bits()) });
-                    }
-                    TxStatus::Timeout => {
-                        let r = txq_state.tx_error_status().read();
-                        Self::run_slot_closure(r.slot_timeout_iter(), f);
-                        txq_state.tx_error_clear().write(|w| unsafe { w.bits(r.bits() & 0x1f000000) });
-                    }
-                    TxStatus::Collision => {
-                        let r = txq_state.tx_error_status().read();
-                        Self::run_slot_closure(r.slot_collision_iter(), f);
-                        txq_state.tx_error_clear().write(|w| unsafe { w.bits(r.bits() & 0x0000001f) });
-                    }
-                }
-        */
+    }
+    #[inline]
+    /// Configure the status of a TX slot.
+    ///
+    /// # Safety
+    /// This is only expected to be called in the MAC ISR handler. For other purposes use
+    /// [LowLevelDriver::start_tx_for_slot]
+    pub unsafe fn set_tx_queue_status(queue: HardwareTxQueue, tx_slot_status: TxSlotStatus) {
+        Self::regs()
+            .tx_slot_config(queue.hardware_slot())
+            .plcp0()
+            .modify(|_, w| {
+                w.slot_valid()
+                    .bit(tx_slot_status.valid())
+                    .slot_enabled()
+                    .bit(tx_slot_status.enabled())
+            });
+    }
+    #[inline]
+    /// Start transmission for a queue.
+    ///
+    /// TODO: Investigate what happens, if the DMA descriptor pointer ist zero.
+    pub fn start_tx_queue(&self, queue: HardwareTxQueue) {
+        unsafe {
+            Self::set_tx_queue_status(queue, TxSlotStatus::Ready);
+        }
+    }
+    #[inline]
+    /// Mark the transmission on a queue as done.
+    pub fn tx_done(&self, queue: HardwareTxQueue) {
+        unsafe {
+            Self::set_tx_queue_status(queue, TxSlotStatus::Disabled);
+        }
+        Self::regs().tx_slot_config(queue.hardware_slot()).plcp0().reset();
+    }
+    #[inline]
+    /// Set parameters for channel access.
+    /// 
+    /// We aren't really sure about any of these.
+    pub fn set_channel_access_parameters(&self, queue: HardwareTxQueue, timeout: usize, backoff_slots: usize, aifsn: usize) {
+        Self::regs().tx_slot_config(queue.hardware_slot()).config().modify(|_, w| unsafe {
+            w.timeout().bits(timeout as _).backoff_time().bits(backoff_slots as _).aifsn().bits(aifsn as _)
+        });
+    }
+    #[inline]
+    /// Configure the PLCP0 register for a TX queue.
+    pub fn set_plcp0(
+        &self,
+        queue: HardwareTxQueue,
+        dma_list_item: Pin<&DmaDescriptor>,
+        wait_for_ack: bool,
+    ) {
+        Self::regs()
+            .tx_slot_config(queue.hardware_slot())
+            .plcp0()
+            .modify(|_, w| unsafe {
+                w.dma_addr()
+                    .bits((dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance() as u32)
+                    .wait_for_ack()
+                    .bit(wait_for_ack)
+            });
+    }
+    #[inline]
+    /// Configure the PLCP1 register for a TX queue.
+    ///
+    /// We are not 100% sure, that our assumption about the bandwidth config is correct.
+    pub fn set_plcp1(
+        &self,
+        queue: HardwareTxQueue,
+        rate: WiFiRate,
+        frame_length: usize,
+        interface: usize,
+        key_slot: Option<u8>,
+    ) {
+        Self::regs().plcp1(queue.hardware_slot()).write(|w| unsafe {
+            w.len()
+                .bits(frame_length as _)
+                .rate()
+                .bits(rate as _)
+                .is_80211_n()
+                .bit(rate.is_ht())
+                .interface_id()
+                .bits(interface as _)
+                // NOTE: This makes the default value zero, which is a valid key slot ID. However
+                // unless you were to TX a frame, that was perfectly crafted to match the key ID,
+                // address and interface of key slot zero, and have a CCMP header. I guess this
+                // isn't an issue then.
+                .key_slot_id()
+                .bits(key_slot.unwrap_or_default() as _)
+                // Maybe my guess about bandwidth was wrong in the end.
+                .bandwidth()
+                .set_bit()
+        });
+    }
+    #[inline]
+    /// Configure the PLCP2 register for a TX queue.
+    ///
+    /// Currently this doesn't do much, except setting a bit with unknown meaning to one.
+    pub fn set_plcp2(&self, queue: HardwareTxQueue) {
+        Self::regs()
+            .plcp2(queue.hardware_slot())
+            .write(|w| w.unknown().set_bit());
+    }
+    #[inline]
+    /// Set the duration for a TX queue.
+    pub fn set_duration(&self, queue: HardwareTxQueue, duration: u16) {
+        let duration = duration as u32;
+        Self::regs()
+            .duration(queue.hardware_slot())
+            .write(|w| unsafe { w.bits(duration | (duration << 16)) });
+    }
+    #[inline]
+    /// Configure the HT related register for a TX queue.
+    pub fn set_ht_parameters(
+        &self,
+        queue: HardwareTxQueue,
+        mcs: u8,
+        is_short_gi: bool,
+        frame_length: usize,
+    ) {
+        Self::regs()
+            .ht_sig(queue.hardware_slot())
+            .write(|w| unsafe {
+                w.bits(
+                    (mcs as u32 & 0b111)
+                        | ((frame_length as u32 & 0xffff) << 8)
+                        | (0b111 << 24)
+                        | ((is_short_gi as u32) << 31),
+                )
+            });
+        Self::regs()
+            .ht_unknown(queue.hardware_slot())
+            .write(|w| unsafe { w.bits(frame_length as u32 | 0x50000) });
     }
 
     // Crypto
 
     #[inline]
-    /// Enable hardware cryptography for the specified interface.
-    ///
-    /// NOTE: We don't yet know, how to revert this, but it's assumed, that the two bits could each
-    /// stand for TX and RX.
-    ///
-    /// # Panics
-    /// If `interface` is greater, than [INTERFACE_COUNT], this will panic.
-    fn enable_crypto_for_interface(interface: usize) {
-        // Writing 0x3_000 in the crypto control register of an interface seem to be used to enable
-        // crypto for that interface.
-        Self::regs()
-            .crypto_control()
-            .interface_crypto_control(interface)
-            .write(|w| unsafe { w.bits(0x0003_0000) });
-    }
-    #[inline]
     /// Initialize hardware cryptography.
     ///
     /// This is pretty much the same as `hal_crypto_init`, except we init crypto for all
     /// interfaces, not just zero and one.
-    fn init_crypto() {
+    fn setup_crypto(&self) {
         // Enable crypto for all interfaces.
-        (0..INTERFACE_COUNT).for_each(Self::enable_crypto_for_interface);
+        (0..INTERFACE_COUNT).for_each(|interface| {
+            // Writing 0x3_000 in the crypto control register of an interface seem to be used to enable
+            // crypto for that interface.
+            Self::regs()
+                .crypto_control()
+                .interface_crypto_control(interface)
+                .write(|w| unsafe { w.bits(0x0003_0000) });
+        });
 
         // Resetting the general crypto control register effectively marks all slots as unused.
         Self::regs()
@@ -840,33 +1231,22 @@ impl LowLevelDriver {
     /// The channel number is not validated.
     pub fn set_channel(&self, channel_number: u8) {
         unsafe {
-            Self::set_mac_state(false);
+            self.set_mac_state(false);
             #[cfg(nomac_channel_set)]
             crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
             #[cfg(not(nomac_channel_set))]
             crate::ffi::chip_v7_set_chan(channel_number, 0);
             disable_wifi_agc();
-            Self::set_mac_state(true);
+            self.set_mac_state(true);
             enable_wifi_agc();
         }
     }
-}
-
-/// Convert a software slot index to the hardware slot index.
-pub fn hw_slot_index(slot: usize) -> usize {
-    4 - slot
-}
-/// Enable or disable the specified TX slot.
-pub unsafe fn set_tx_slot_enabled(slot: usize, enabled: bool) {
-    HalWIFI::regs()
-        .tx_slot_config(hw_slot_index(slot))
-        .plcp0()
-        .modify(|_, w| w.slot_enabled().bit(enabled));
-}
-/// Validate or invalidate the specified TX slot.
-pub unsafe fn set_tx_slot_validity(slot: usize, valid: bool) {
-    HalWIFI::regs()
-        .tx_slot_config(hw_slot_index(slot))
-        .plcp0()
-        .modify(|_, w| w.slot_valid().bit(valid));
+    /// Run TX power control.
+    ///
+    /// We don't really know, what this does.
+    pub fn run_power_control(&self) {
+        unsafe {
+            tx_pwctrl_background(1, 0);
+        }
+    }
 }

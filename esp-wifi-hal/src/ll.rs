@@ -15,11 +15,11 @@ use esp_hal::{
 };
 use esp_phy::{PhyController, PhyInitGuard};
 use macro_bits::{bit, check_bit};
+use portable_atomic::AtomicU64;
 
 use crate::{
     esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
-    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
-    WiFiRate,
+    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background}, WiFiRate,
 };
 
 /// Run a reversible sequence of functions either forward or in reverse.
@@ -239,7 +239,7 @@ pub enum HardwareTxResult {
 impl HardwareTxResult {
     /// Get raw transmission status bits.
     fn raw_status(&self) -> u8 {
-        let wifi = LowLevelDriver::regs();
+        let wifi = LowLevelDriver::regs_internal();
         (match self {
             HardwareTxResult::Success => wifi.txq_state().tx_complete_status().read().bits(),
             HardwareTxResult::Timeout => wifi.txq_state().tx_error_status().read().bits() >> 0x10,
@@ -248,7 +248,7 @@ impl HardwareTxResult {
     }
     /// Clear slot transmission status bit.
     fn clear_slot_bit(&self, slot: usize) {
-        let wifi = LowLevelDriver::regs();
+        let wifi = LowLevelDriver::regs_internal();
         match self {
             HardwareTxResult::Success => wifi
                 .txq_state()
@@ -457,6 +457,8 @@ pub const INTERFACE_COUNT: usize = 4;
 /// The number of key slots the hardware has.
 pub const KEY_SLOT_COUNT: usize = 25;
 
+static MAC_TIME_OFFSET: AtomicU64 = AtomicU64::new(0);
+
 /// Low level driver for the Wi-Fi peripheral.
 ///
 /// This is intended as an intermediary layer between the user facing API and the hardware, to make
@@ -487,11 +489,19 @@ pub struct LowLevelDriver {
     _phy_init_guard: Option<PhyInitGuard<'static>>,
 }
 impl LowLevelDriver {
-    #[doc(hidden)]
+    /// Get the PAC Wi-Fi peripheral.
+    ///
+    /// # Safety
+    /// This is only intended to be used for debugging and development purposes. The ways you can
+    /// shoot yourself in the foot, by accessing the peripheral directly, are way too many to list.
+    /// Using this should be a last resort and only be done, if you know what you're doing.
+    pub unsafe fn regs() -> WIFI {
+        Self::regs_internal()
+    }
     /// Get the PAC Wi-Fi peripheral.
     ///
     /// This stops rust-analyzer from doing funky shit.
-    pub fn regs() -> WIFI {
+    fn regs_internal() -> WIFI {
         unsafe { WIFI::steal() }
     }
     /// Create a new [LowLevelDriver].
@@ -572,11 +582,11 @@ impl LowLevelDriver {
         // This is only required on the ESP32-S2.
         while !intialized
             && cfg!(feature = "esp32s2")
-            && Self::regs().ctrl().read().bits() & MAC_READY_MASK == 0
+            && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK == 0
         {}
         // If we are initializing the MAC, we need to clear some bits, by masking the reg, with the
         // MAC_INIT_MASK. On deinit, we need to set the bits we previously cleared.
-        Self::regs().ctrl().modify(|r, w| unsafe {
+        Self::regs_internal().ctrl().modify(|r, w| unsafe {
             w.bits(if intialized {
                 r.bits() & MAC_INIT_MASK
             } else {
@@ -585,7 +595,7 @@ impl LowLevelDriver {
         });
 
         // Spin until the MAC is no longer ready.
-        while !intialized && Self::regs().ctrl().read().bits() & MAC_READY_MASK != 0 {}
+        while !intialized && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK != 0 {}
     }
     #[inline]
     /// Setup relevant blocks of the MAC.
@@ -629,6 +639,13 @@ impl LowLevelDriver {
             self.set_module_status(true);
         }
         let mut hal_wifi = unsafe { HalWIFI::steal() };
+        #[cfg(esp32)]
+        {
+            <HalWIFI<'_> as esp_phy::MacTimeExt>::set_mac_time_update_cb(&hal_wifi, |duration| {
+                let _ = MAC_TIME_OFFSET
+                    .fetch_add(duration.as_micros(), core::sync::atomic::Ordering::Relaxed);
+            });
+        }
         // Enable the modem clock.
         hal_wifi.enable_modem_clock(true);
         // Initialize the PHY.
@@ -649,8 +666,12 @@ impl LowLevelDriver {
     /// # Safety
     /// This is expected to be called ONLY from the MAC interrupt handler.
     pub unsafe fn get_and_clear_mac_interrupt_cause() -> MacInterruptCause {
-        let cause = Self::regs().mac_interrupt().wifi_int_status().read().bits();
-        Self::regs()
+        let cause = Self::regs_internal()
+            .mac_interrupt()
+            .wifi_int_status()
+            .read()
+            .bits();
+        Self::regs_internal()
             .mac_interrupt()
             .wifi_int_clear()
             .write(|w| unsafe { w.bits(cause) });
@@ -695,7 +716,7 @@ impl LowLevelDriver {
     /// # Safety
     /// Enabling RX, when the DMA list isn't setup correctly yet, may be incorrect.
     unsafe fn set_rx_enable(enable_rx: bool) {
-        Self::regs()
+        Self::regs_internal()
             .rx_ctrl()
             .modify(|_, w| w.rx_enable().bit(enable_rx));
     }
@@ -704,13 +725,13 @@ impl LowLevelDriver {
     ///
     /// We don't know, if this influences the RF frontend in any way.
     pub fn rx_enabled(&self) -> bool {
-        Self::regs().rx_ctrl().read().rx_enable().bit()
+        Self::regs_internal().rx_ctrl().read().rx_enable().bit()
     }
     /// Tell the hardware to reload the RX descriptors.
     ///
     /// This will spin, until the bit is clear again.
     pub fn reload_hw_rx_descriptors(&self) {
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let reg = wifi.rx_ctrl();
 
         // Start the reload.
@@ -721,7 +742,7 @@ impl LowLevelDriver {
     }
     /// Set the base descriptor.
     pub fn set_base_rx_descriptor(&self, base_descriptor: NonNull<DmaDescriptor>) {
-        Self::regs()
+        Self::regs_internal()
             .rx_dma_list()
             .rx_descr_base()
             .write(|w| unsafe { w.bits(base_descriptor.expose_provenance().get() as u32) });
@@ -729,7 +750,7 @@ impl LowLevelDriver {
     }
     /// Reset the base descriptor.
     pub fn clear_base_rx_descriptor(&self) {
-        Self::regs().rx_dma_list().rx_descr_base().reset();
+        Self::regs_internal().rx_dma_list().rx_descr_base().reset();
         self.reload_hw_rx_descriptors();
     }
     /// Start receiving frames.
@@ -753,19 +774,31 @@ impl LowLevelDriver {
     /// Get the base RX descriptor.
     pub fn base_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
-            Self::regs().rx_dma_list().rx_descr_base().read().bits() as usize,
+            Self::regs_internal()
+                .rx_dma_list()
+                .rx_descr_base()
+                .read()
+                .bits() as usize,
         ))
     }
     /// Get the next RX descriptor.
     pub fn next_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
-            Self::regs().rx_dma_list().rx_descr_next().read().bits() as usize,
+            Self::regs_internal()
+                .rx_dma_list()
+                .rx_descr_next()
+                .read()
+                .bits() as usize,
         ))
     }
     /// Get the last RX descriptor.
     pub fn last_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
-            Self::regs().rx_dma_list().rx_descr_last().read().bits() as usize,
+            Self::regs_internal()
+                .rx_dma_list()
+                .rx_descr_last()
+                .read()
+                .bits() as usize,
         ))
     }
 
@@ -773,14 +806,14 @@ impl LowLevelDriver {
 
     /// Enable or disable the specified filter.
     pub fn set_filter_enable(&self, interface: usize, filter_bank: RxFilterBank, enabled: bool) {
-        Self::regs()
+        Self::regs_internal()
             .filter_bank(filter_bank.into_bits())
             .mask_high(interface)
             .modify(|_, w| w.enabled().bit(enabled));
     }
     /// Check if the filter is enabled.
     pub fn filter_enabled(&self, interface: usize, filter_bank: RxFilterBank) -> bool {
-        Self::regs()
+        Self::regs_internal()
             .filter_bank(filter_bank.into_bits())
             .mask_high(interface)
             .read()
@@ -796,7 +829,7 @@ impl LowLevelDriver {
         filter_bank: RxFilterBank,
         address: &[u8; 6],
     ) {
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let filter_bank = wifi.filter_bank(filter_bank.into_bits());
 
         let (address_low, address_high) = split_address(address);
@@ -811,7 +844,7 @@ impl LowLevelDriver {
     ///
     /// This will neither enable the filter nor configure the address.
     pub fn set_filter_mask(&self, interface: usize, filter_bank: RxFilterBank, mask: &[u8; 6]) {
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let filter_bank = wifi.filter_bank(filter_bank.into_bits());
 
         let (mask_low, mask_high) = split_address(mask);
@@ -834,13 +867,14 @@ impl LowLevelDriver {
     ///
     /// This will also enable the BSSID check, to bring the filter into a sort of ground state,
     /// so that we can make assumptions about its behaviour when configuring other aspects.
-    pub fn clear_filter_bank(&self, interface: usize, filter_bank: RxFilterBank) {
-        let wifi = Self::regs();
+    pub fn clear_filter(&self, interface: usize, filter_bank: RxFilterBank) {
+        let wifi = Self::regs_internal();
         let filter_bank = wifi.filter_bank(filter_bank.into_bits());
 
         filter_bank.addr_low(interface).reset();
         filter_bank.addr_high(interface).reset();
         filter_bank.mask_low(interface).reset();
+        // As a side effect, this also disables the filter.
         filter_bank.mask_high(interface).reset();
     }
     /// Reset the filters for an interface.
@@ -848,8 +882,8 @@ impl LowLevelDriver {
     /// This will clear the RX and BSSID filters, as well as enabling the BSSID check and enabling
     /// filtering for unicast and multicast frames.
     pub fn reset_interface_filters(&self, interface: usize) {
-        self.clear_filter_bank(interface, RxFilterBank::ReceiverAddress);
-        self.clear_filter_bank(interface, RxFilterBank::Bssid);
+        self.clear_filter(interface, RxFilterBank::ReceiverAddress);
+        self.clear_filter(interface, RxFilterBank::Bssid);
 
         self.set_bssid_check_enable(interface, true);
         self.set_filtered_address_types(interface, true, true);
@@ -859,44 +893,54 @@ impl LowLevelDriver {
     /// If an address type is unfiltered, frames with RAs matching that address type will pass the
     /// filter unconditionally. Otherwise the frame will be filtered as usual.
     pub fn set_filtered_address_types(&self, interface: usize, unicast: bool, multicast: bool) {
-        Self::regs().filter_control(interface).modify(|_, w| {
-            w.block_unicast()
-                .bit(unicast)
-                .block_multicast()
-                .bit(multicast)
-        });
+        Self::regs_internal()
+            .filter_control(interface)
+            .modify(|_, w| {
+                w.block_unicast()
+                    .bit(unicast)
+                    .block_multicast()
+                    .bit(multicast)
+            });
     }
     /// Configure if the BSSID should be checked for RX filtering.
     ///
     /// If the BSSID check is enabled, a frame will only pass the RX filter, if its BSSID matches
     /// the one in the filter. By default this is enabled.
     pub fn set_bssid_check_enable(&self, interface: usize, enabled: bool) {
-        Self::regs()
+        Self::regs_internal()
             .filter_control(interface)
             .modify(|_, w| w.bssid_check().bit(enabled));
     }
     /// Configure which control frames pass the filter.
     pub fn set_control_frame_filter(&self, interface: usize, config: &ControlFrameFilterConfig) {
-        Self::regs().rx_ctrl_filter(interface).modify(|_, w| {
-            w.control_wrapper()
-                .bit(config.control_wrapper)
-                .block_ack_request()
-                .bit(config.block_ack_request)
-                .block_ack()
-                .bit(config.block_ack)
-                .ps_poll()
-                .bit(config.ps_poll)
-                .rts()
-                .bit(config.rts)
-                .cts()
-                .bit(config.cts)
-                .ack()
-                .bit(config.ack)
-                .cf_end()
-                .bit(config.cf_end)
-                .cf_end_cf_ack()
-                .bit(config.cf_end_cf_ack)
-        });
+        Self::regs_internal()
+            .rx_ctrl_filter(interface)
+            .modify(|_, w| {
+                w.control_wrapper()
+                    .bit(config.control_wrapper)
+                    .block_ack_request()
+                    .bit(config.block_ack_request)
+                    .block_ack()
+                    .bit(config.block_ack)
+                    .ps_poll()
+                    .bit(config.ps_poll)
+                    .rts()
+                    .bit(config.rts)
+                    .cts()
+                    .bit(config.cts)
+                    .ack()
+                    .bit(config.ack)
+                    .cf_end()
+                    .bit(config.cf_end)
+                    .cf_end_cf_ack()
+                    .bit(config.cf_end_cf_ack)
+            });
+    }
+    /// Set the parameters for scanning mode.
+    ///
+    /// We don't entirely know what these parmeters mean.
+    pub fn set_scanning_mode_parameters(&self, interface: usize, beacons: bool, other_frames: bool) {
+        Self::regs_internal().filter_control(interface).modify(|_, w| w.scan_mode().bit(beacons).data_and_mgmt_mode().bit(other_frames));
     }
     #[inline]
     /// Setup RX filtering.
@@ -940,7 +984,7 @@ impl LowLevelDriver {
     /// This is only expected to be called in the MAC ISR handler. For other purposes use
     /// [LowLevelDriver::start_tx_for_slot]
     pub unsafe fn set_tx_queue_status(queue: HardwareTxQueue, tx_slot_status: TxSlotStatus) {
-        Self::regs()
+        Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .plcp0()
             .modify(|_, w| {
@@ -965,16 +1009,33 @@ impl LowLevelDriver {
         unsafe {
             Self::set_tx_queue_status(queue, TxSlotStatus::Disabled);
         }
-        Self::regs().tx_slot_config(queue.hardware_slot()).plcp0().reset();
+        Self::regs_internal()
+            .tx_slot_config(queue.hardware_slot())
+            .plcp0()
+            .reset();
     }
     #[inline]
     /// Set parameters for channel access.
-    /// 
+    ///
     /// We aren't really sure about any of these.
-    pub fn set_channel_access_parameters(&self, queue: HardwareTxQueue, timeout: usize, backoff_slots: usize, aifsn: usize) {
-        Self::regs().tx_slot_config(queue.hardware_slot()).config().modify(|_, w| unsafe {
-            w.timeout().bits(timeout as _).backoff_time().bits(backoff_slots as _).aifsn().bits(aifsn as _)
-        });
+    pub fn set_channel_access_parameters(
+        &self,
+        queue: HardwareTxQueue,
+        timeout: usize,
+        backoff_slots: usize,
+        aifsn: usize,
+    ) {
+        Self::regs_internal()
+            .tx_slot_config(queue.hardware_slot())
+            .config()
+            .modify(|_, w| unsafe {
+                w.timeout()
+                    .bits(timeout as _)
+                    .backoff_time()
+                    .bits(backoff_slots as _)
+                    .aifsn()
+                    .bits(aifsn as _)
+            });
     }
     #[inline]
     /// Configure the PLCP0 register for a TX queue.
@@ -984,12 +1045,15 @@ impl LowLevelDriver {
         dma_list_item: Pin<&DmaDescriptor>,
         wait_for_ack: bool,
     ) {
-        Self::regs()
+        Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .plcp0()
             .modify(|_, w| unsafe {
                 w.dma_addr()
-                    .bits((dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance() as u32)
+                    .bits(
+                        (dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance()
+                            as u32,
+                    )
                     .wait_for_ack()
                     .bit(wait_for_ack)
             });
@@ -1006,32 +1070,34 @@ impl LowLevelDriver {
         interface: usize,
         key_slot: Option<u8>,
     ) {
-        Self::regs().plcp1(queue.hardware_slot()).write(|w| unsafe {
-            w.len()
-                .bits(frame_length as _)
-                .rate()
-                .bits(rate as _)
-                .is_80211_n()
-                .bit(rate.is_ht())
-                .interface_id()
-                .bits(interface as _)
-                // NOTE: This makes the default value zero, which is a valid key slot ID. However
-                // unless you were to TX a frame, that was perfectly crafted to match the key ID,
-                // address and interface of key slot zero, and have a CCMP header. I guess this
-                // isn't an issue then.
-                .key_slot_id()
-                .bits(key_slot.unwrap_or_default() as _)
-                // Maybe my guess about bandwidth was wrong in the end.
-                .bandwidth()
-                .set_bit()
-        });
+        Self::regs_internal()
+            .plcp1(queue.hardware_slot())
+            .write(|w| unsafe {
+                w.len()
+                    .bits(frame_length as _)
+                    .rate()
+                    .bits(rate as _)
+                    .is_80211_n()
+                    .bit(rate.is_ht())
+                    .interface_id()
+                    .bits(interface as _)
+                    // NOTE: This makes the default value zero, which is a valid key slot ID. However
+                    // unless you were to TX a frame, that was perfectly crafted to match the key ID,
+                    // address and interface of key slot zero, and have a CCMP header. I guess this
+                    // isn't an issue then.
+                    .key_slot_id()
+                    .bits(key_slot.unwrap_or_default() as _)
+                    // Maybe my guess about bandwidth was wrong in the end.
+                    .bandwidth()
+                    .set_bit()
+            });
     }
     #[inline]
     /// Configure the PLCP2 register for a TX queue.
     ///
     /// Currently this doesn't do much, except setting a bit with unknown meaning to one.
     pub fn set_plcp2(&self, queue: HardwareTxQueue) {
-        Self::regs()
+        Self::regs_internal()
             .plcp2(queue.hardware_slot())
             .write(|w| w.unknown().set_bit());
     }
@@ -1039,7 +1105,7 @@ impl LowLevelDriver {
     /// Set the duration for a TX queue.
     pub fn set_duration(&self, queue: HardwareTxQueue, duration: u16) {
         let duration = duration as u32;
-        Self::regs()
+        Self::regs_internal()
             .duration(queue.hardware_slot())
             .write(|w| unsafe { w.bits(duration | (duration << 16)) });
     }
@@ -1052,7 +1118,7 @@ impl LowLevelDriver {
         is_short_gi: bool,
         frame_length: usize,
     ) {
-        Self::regs()
+        Self::regs_internal()
             .ht_sig(queue.hardware_slot())
             .write(|w| unsafe {
                 w.bits(
@@ -1062,7 +1128,7 @@ impl LowLevelDriver {
                         | ((is_short_gi as u32) << 31),
                 )
             });
-        Self::regs()
+        Self::regs_internal()
             .ht_unknown(queue.hardware_slot())
             .write(|w| unsafe { w.bits(frame_length as u32 | 0x50000) });
     }
@@ -1079,14 +1145,14 @@ impl LowLevelDriver {
         (0..INTERFACE_COUNT).for_each(|interface| {
             // Writing 0x3_000 in the crypto control register of an interface seem to be used to enable
             // crypto for that interface.
-            Self::regs()
+            Self::regs_internal()
                 .crypto_control()
                 .interface_crypto_control(interface)
                 .write(|w| unsafe { w.bits(0x0003_0000) });
         });
 
         // Resetting the general crypto control register effectively marks all slots as unused.
-        Self::regs()
+        Self::regs_internal()
             .crypto_control()
             .general_crypto_control()
             .reset();
@@ -1095,14 +1161,14 @@ impl LowLevelDriver {
     ///
     /// As soon, as the key slot is enabled, the hardware will treat the data in it as valid.
     pub fn set_key_slot_enable(&self, key_slot: usize, enabled: bool) {
-        Self::regs()
+        Self::regs_internal()
             .crypto_control()
             .crypto_key_slot_state()
             .modify(|_, w| w.key_slot_enable(key_slot as u8).bit(enabled));
     }
     /// Check if the key slot is enabled.
     pub fn key_slot_enabled(&self, key_slot: usize) -> bool {
-        Self::regs()
+        Self::regs_internal()
             .crypto_control()
             .crypto_key_slot_state()
             .read()
@@ -1115,7 +1181,7 @@ impl LowLevelDriver {
     /// If `key` is longer than 32 bytes, or `key_slot` larger than 24.
     pub fn set_key(&self, key_slot: usize, key: &[u8]) {
         assert!(key.len() <= 32, "Keys can't be longer than 32 bytes.");
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let key_slot = wifi.crypto_key_slot(key_slot);
 
         // Let's hope the compiler is smart enough to emit no panics this way.
@@ -1154,7 +1220,7 @@ impl LowLevelDriver {
         key_slot: usize,
         key_slot_parameters: &KeySlotParameters,
     ) {
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let key_slot = wifi.crypto_key_slot(key_slot);
         let (address_low, address_high) = split_address(&key_slot_parameters.address);
 
@@ -1184,7 +1250,7 @@ impl LowLevelDriver {
     ///
     /// This will not disable the key slot, use [Self::set_key_slot_enable] for that.
     pub fn clear_key_slot(&self, key_slot: usize) {
-        let wifi = Self::regs();
+        let wifi = Self::regs_internal();
         let key_slot = wifi.crypto_key_slot(key_slot);
 
         // Effectively zeroes the entire slot.
@@ -1208,7 +1274,7 @@ impl LowLevelDriver {
         protect_signaling_and_payload: bool,
         is_cipher_aead: bool,
     ) {
-        Self::regs()
+        Self::regs_internal()
             .crypto_control()
             .interface_crypto_control(interface)
             .modify(|r, w| unsafe {
@@ -1222,6 +1288,41 @@ impl LowLevelDriver {
                     .sms4()
                     .clear_bit()
             });
+    }
+    /// Set the status of SMS4 (WAPI) encapsulation.
+    ///
+    /// SMS4 needs to be enabled here, if you want to use it elsewhere. Our current understanding
+    /// is, that WAPI can't be used concurrently with other ciphers.
+    pub fn set_sms4_status(&self, enabled: bool) {
+        Self::regs_internal()
+            .crypto_control()
+            .general_crypto_control()
+            .modify(|r, w| unsafe {
+                w.bits(if enabled {
+                    r.bits() | 0x00ffff00
+                } else {
+                    r.bits() & 0xff0000ff
+                })
+            });
+    }
+
+    // Timing
+
+    /// Get the offset between the system timers and the MAC timer.
+    pub fn mac_time_offset() -> esp_hal::time::Duration {
+        cfg_if::cfg_if! {
+            if #[cfg(esp32)] {
+                let offset = MAC_TIME_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+            } else {
+                let offset = 0;
+            }
+        }
+        esp_hal::time::Duration::from_micros(offset)
+    }
+    /// Get the current value of the MAC timer.
+    pub fn mac_time(&self) -> esp_hal::time::Duration {
+        esp_hal::time::Duration::from_micros(Self::regs_internal().mac_time().read().bits() as u64)
+            + Self::mac_time_offset()
     }
 
     // RF

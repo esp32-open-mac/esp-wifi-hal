@@ -2,11 +2,12 @@ use core::{
     cell::RefCell,
     pin::{pin, Pin},
 };
-use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
+use portable_atomic::{AtomicU16, AtomicU8, Ordering};
 
 use crate::{
     ll::{
-        EdcaAccessCategory, HardwareTxQueue, HardwareTxResult, KeySlotParameters, LowLevelDriver, RxFilterBank, TxSlotStatus, WiFiInterrupt
+        HardwareTxQueue, HardwareTxResult, KeySlotParameters, LowLevelDriver, RxFilterBank,
+        TxSlotStatus, WiFiInterrupt,
     },
     rates::RATE_LUT,
     sync::{DropGuard, TxSlotQueue},
@@ -194,7 +195,7 @@ impl BorrowedBuffer<'_> {
     /// clock.
     pub fn corrected_timestamp(&self) -> embassy_time::Instant {
         embassy_time::Instant::from_micros(
-            self.timestamp() as u64 + MAC_SYSTEM_TIME_DELTA.load(Ordering::Relaxed),
+            self.timestamp() as u64 + LowLevelDriver::mac_time_offset().as_micros(),
         )
     }
     /// Check if the frame is an A-MPDU.
@@ -314,9 +315,6 @@ pub enum ScanningMode {
 /// A [Result] returned by the Wi-Fi driver.
 pub type WiFiResult<T> = Result<T, WiFiError>;
 
-/// The time the MAC clock was enabled in microseconds.
-static MAC_SYSTEM_TIME_DELTA: AtomicU64 = AtomicU64::new(0);
-
 /// Driver for the Wi-Fi peripheral.
 ///
 /// WARNING: Currently dropping the driver is not properly implemented.
@@ -417,7 +415,8 @@ impl<'res> WiFi<'res> {
 
         let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
 
-        self.ll_driver.set_channel_access_parameters(queue, tx_parameters.ack_timeout, 0, 0);
+        self.ll_driver
+            .set_channel_access_parameters(queue, tx_parameters.ack_timeout, 0, 0);
         self.ll_driver
             .set_plcp0(queue, dma_list_item, ack_for_interface.is_some());
         self.ll_driver.set_plcp1(
@@ -600,9 +599,8 @@ impl<'res> WiFi<'res> {
         self.current_channel.load(Ordering::Relaxed)
     }
     /// Get the current MAC time in µs.
-    pub fn mac_time(&self) -> u32 {
-        // We hardcode the addresses here, until PAC support is merged.
-        WIFI::regs().mac_time().read().bits()
+    pub fn mac_time(&self) -> esp_hal::time::Duration {
+        self.ll_driver.mac_time()
     }
     /// Check if that interface is valid.
     pub const fn validate_interface(interface: usize) -> WiFiResult<()> {
@@ -618,48 +616,48 @@ impl<'res> WiFi<'res> {
     /// but the BSSID is disabled, it will assume that `BSSID == RA`. However setting this to
     /// `false` will stop this behaviour.
     pub fn set_filter_bssid_check(&self, interface: usize, enabled: bool) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .filter_control(interface)
-            .modify(|_, w| w.bssid_check().bit(enabled));
-        Ok(())
+        Self::validate_interface(interface)
+            .inspect(|_| self.ll_driver.set_bssid_check_enable(interface, enabled))
     }
-    /// Write raw value to the `INTERFACE_RX_CONTROL` register.
+    /// Configure a filter.
     ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
-    /// something else than that, you probably want to use one of the other functions.
-    pub fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .filter_control(interface)
-            .write(|w| unsafe { w.bits(val) });
-        Ok(())
-    }
-    /// Read a raw value from the `INTERFACE_RX_CONTROL` register.
-    ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
-    /// something else than that, you probably want to use one of the other functions.
-    pub fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
-        Self::validate_interface(interface)?;
-        Ok(WIFI::regs().filter_control(interface).read().bits())
-    }
-    /// Configure the filter.
+    /// This will default the mask to an all ones mask, and enable the filter.
     pub fn set_filter(
         &self,
-        filter_bank: RxFilterBank,
         interface: usize,
+        filter_bank: RxFilterBank,
         address: [u8; 6],
     ) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver
+                .set_filter_address(interface, filter_bank, &address);
+            self.ll_driver
+                .set_filter_mask(interface, filter_bank, &[0xff; 6]);
+            self.ll_driver
+                .set_filter_enable(interface, filter_bank, true);
+        })
+    }
+    /// Override the mask of a filter.
+    ///
+    /// This doesn't check, if the filter is actually enabled.
+    pub fn override_filter_mask(
+        &self,
+        interface: usize,
+        filter_bank: RxFilterBank,
+        mask: [u8; 6],
+    ) -> WiFiResult<()> {
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver
+                .set_filter_mask(interface, filter_bank, &mask)
+        })
+    }
 
-        self.ll_driver
-            .set_filter_address(interface, filter_bank, &address);
-        self.ll_driver
-            .set_filter_mask(interface, filter_bank, &[0xff; 6]);
-        self.ll_driver
-            .set_filter_enable(interface, filter_bank, true);
-
-        Ok(())
+    /// Clear and disable a filter for an interface and bank.
+    ///
+    /// This will return the filter into its default state.
+    pub fn clear_filter(&self, interface: usize, filter_bank: RxFilterBank) -> WiFiResult<()> {
+        Self::validate_interface(interface)
+            .inspect(|_| self.ll_driver.clear_filter(interface, filter_bank))
     }
     /// Enable or disable scanning mode.
     pub fn set_scanning_mode(
@@ -667,21 +665,13 @@ impl<'res> WiFi<'res> {
         interface: usize,
         scanning_mode: ScanningMode,
     ) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .filter_control(interface)
-            .modify(|_, w| match scanning_mode {
-                ScanningMode::Disabled => {
-                    w.scan_mode().clear_bit().data_and_mgmt_mode().clear_bit()
-                }
-                ScanningMode::BeaconsOnly => {
-                    w.scan_mode().set_bit().data_and_mgmt_mode().clear_bit()
-                }
-                ScanningMode::ManagementAndData => {
-                    w.scan_mode().clear_bit().data_and_mgmt_mode().set_bit()
-                }
-            });
-        Ok(())
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver.set_scanning_mode_parameters(
+                interface,
+                scanning_mode == ScanningMode::BeaconsOnly,
+                scanning_mode == ScanningMode::ManagementAndData,
+            );
+        })
     }
     /// Check if they key slot is valid.
     pub const fn validate_key_slot(key_slot: usize) -> WiFiResult<()> {
@@ -756,6 +746,8 @@ impl<'res> WiFi<'res> {
             protect_signaling_and_payload,
             cipher_parameters.is_aead(),
         );
+        // Currently, we do not support WAPI. What a shame...
+        self.ll_driver.set_sms4_status(false);
 
         Ok(())
     }

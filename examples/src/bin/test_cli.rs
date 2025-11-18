@@ -311,7 +311,7 @@ fn filter_command<'a>(
                 let _ = writeln!(uart0_tx, "The provided MAC address was invalid.");
                 return;
             };
-            let _ = wifi.set_filter(bank, interface, *mac_address);
+            let _ = wifi.set_filter(interface, bank, *mac_address);
         }
         None => {
             let _ = writeln!(

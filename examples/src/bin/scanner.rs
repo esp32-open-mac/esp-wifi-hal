@@ -42,7 +42,7 @@ async fn scan_on_channel(wifi: &mut WiFi<'_>, known_ssids: &mut BTreeSet<String>
     }
 }
 
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);

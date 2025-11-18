@@ -1,100 +1,83 @@
 use core::{
     cell::RefCell,
-    mem::forget,
-    ops::Deref,
     pin::{pin, Pin},
 };
-use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
+use portable_atomic::{AtomicU16, AtomicU8, Ordering};
 
 use crate::{
-    esp_pac::wifi::TX_SLOT_CONFIG,
-    ll,
+    ll::{
+        HardwareTxQueue, HardwareTxResult, KeySlotParameters, LowLevelDriver, RxFilterBank,
+        TxSlotStatus, WiFiInterrupt,
+    },
     rates::RATE_LUT,
-    sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
-    CipherParameters, WiFiRate,
+    sync::{DropGuard, TxSlotQueue},
+    CipherParameters, WiFiRate, INTERFACE_COUNT, KEY_SLOT_COUNT,
 };
 use embassy_sync::blocking_mutex::{self};
-use embassy_time::Instant;
 use esp_hal::{
-    clock::{ModemClockController, PhyClockGuard},
     dma::{DmaDescriptor, Owner},
-    interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
-    peripherals::{Interrupt, ADC2, LPWR, WIFI},
-    ram,
-    system::Cpu,
+    handler,
+    interrupt::CpuInterrupt,
+    peripherals::{ADC2, WIFI},
 };
-use esp_wifi_sys::include::{
-    esp_phy_calibration_data_t, esp_phy_calibration_mode_t_PHY_RF_CAL_FULL, register_chipv7_phy,
-    wifi_pkt_rx_ctrl_t,
-};
+use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 use macro_bits::{bit, check_bit};
 
 use crate::{
     dma_list::DMAList,
-    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
-    phy_init_data::PHY_INIT_DATA_DEFAULT,
-    sync::{SignalQueue, TxSlotStateSignal},
+    sync::{HardwareTxResultSignal, SignalQueue},
     DefaultRawMutex, WiFiResources,
 };
 
 static WIFI_RX_SIGNAL_QUEUE: SignalQueue = SignalQueue::new();
 
-#[allow(clippy::declare_interior_mutable_const)]
-const EMPTY_SLOT: TxSlotStateSignal = TxSlotStateSignal::new();
-/// These are for knowing, when transmission has finished.
-static WIFI_TX_SLOTS: [TxSlotStateSignal; 5] = [EMPTY_SLOT; 5];
+/// These are for knowing, when transmission has finished, and with which result.
+static HARDWARE_TX_RESULT_SIGNALS: [HardwareTxResultSignal; 5] =
+    [const { HardwareTxResultSignal::new() }; 5];
 
 // We run tx_pwctrl_background every four transmissions.
 static FRAMES_SINCE_LAST_TXPWR_CTRL: AtomicU8 = AtomicU8::new(0);
 
-#[ram]
-extern "C" fn interrupt_handler() {
-    // We don't want to have to steal this all the time.
-    let wifi = WIFI::regs();
-
-    let cause = wifi.mac_interrupt().wifi_int_status().read().bits();
-    if cause == 0 {
+#[handler]
+fn mac_handler() {
+    let cause = unsafe { LowLevelDriver::get_and_clear_mac_interrupt_cause() };
+    if cause.is_emtpy() {
         return;
     }
-    #[cfg(pwr_interrupt_present)]
-    {
-        // We ignore the WIFI_PWR interrupt for now...
-        let cause = wifi.pwr_interrupt().pwr_int_status().read().bits();
-        wifi.pwr_interrupt()
-            .pwr_int_clear()
-            .write(|w| unsafe { w.bits(cause) });
-    }
-    wifi.mac_interrupt()
-        .wifi_int_clear()
-        .write(|w| unsafe { w.bits(cause) });
-    if cause & 0x1000024 != 0 {
+
+    if cause.rx() {
         WIFI_RX_SIGNAL_QUEUE.put();
     }
-    if cause & 0x80 != 0 {
+    if cause.tx_success() {
         unsafe {
-            ll::process_tx_completions(|slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Done);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Success, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(HardwareTxResult::Success);
             })
         };
     }
-    if cause & 0x80000 != 0 {
+    if cause.tx_timeout() {
         unsafe {
-            ll::process_tx_timeouts(|slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Timeout);
-                ll::set_tx_slot_validity(slot, false);
-                ll::set_tx_slot_enabled(slot, false);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Timeout, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(HardwareTxResult::Timeout);
+                LowLevelDriver::set_tx_queue_status(queue, TxSlotStatus::Disabled);
             })
         };
     }
-    if cause & 0x100 != 0 {
+    if cause.tx_collision() {
         unsafe {
-            ll::process_tx_collisions(|slot| {
-                WIFI_TX_SLOTS[slot].signal(TxSlotStatus::Collision);
-                ll::set_tx_slot_validity(slot, false);
-                ll::set_tx_slot_enabled(slot, false);
+            LowLevelDriver::process_tx_status(HardwareTxResult::Collision, |queue| {
+                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
+                    .signal(HardwareTxResult::Collision);
+                LowLevelDriver::set_tx_queue_status(queue, TxSlotStatus::Disabled);
             })
         };
     }
+}
+#[cfg(pwr_interrupt_present)]
+#[handler]
+fn pwr_handler() {
+    let _cause = unsafe { LowLevelDriver::get_and_clear_pwr_interrupt_cause() };
+    // We don't do anything yet.
 }
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -110,7 +93,7 @@ pub enum TxErrorBehaviour {
 
 /// A buffer borrowed from the DMA list.
 pub struct BorrowedBuffer<'res> {
-    dma_list: &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>>,
+    dma_list: &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>,
     dma_descriptor: &'res mut DmaDescriptor,
 }
 impl BorrowedBuffer<'_> {
@@ -163,12 +146,15 @@ impl BorrowedBuffer<'_> {
         self.padded_buffer()
             .get(..self.unpadded_buffer_len())
             .unwrap_or_else(|| {
-                defmt_or_log::panic!(
-                    "Corrected len: {} Padded len: {} SIG len: {}",
+                defmt_or_log::warn!(
+                    "Buffer was shorter then calculated length. Corrected len: {} Padded len: {} SIG len: {} Header: {:02x?}",
                     self.unpadded_buffer_len(),
                     self.dma_descriptor.len(),
-                    self.raw_header().sig_len()
+                    self.raw_header().sig_len(),
+                    &self.padded_buffer()[..Self::RX_CONTROL_HEADER_LENGTH]
                 );
+                self.dma_list.lock(|dma_list| dma_list.borrow().log_stats());
+                self.padded_buffer()
             })
     }
     /// Same as [Self::raw_buffer], but mutable.
@@ -203,13 +189,13 @@ impl BorrowedBuffer<'_> {
     }
     /// The time at which the packet was received in µs.
     pub fn timestamp(&self) -> u32 {
-        u32::from_le_bytes(self.header_buffer()[12..16].try_into().unwrap())
+        self.raw_header().timestamp()
     }
     /// The time the packet was received, corrected for the difference between MAC and system
     /// clock.
     pub fn corrected_timestamp(&self) -> embassy_time::Instant {
         embassy_time::Instant::from_micros(
-            self.timestamp() as u64 + MAC_SYSTEM_TIME_DELTA.load(Ordering::Relaxed),
+            self.timestamp() as u64 + LowLevelDriver::mac_time_offset().as_micros(),
         )
     }
     /// Check if the frame is an A-MPDU.
@@ -240,7 +226,7 @@ impl BorrowedBuffer<'_> {
     /// Get an iterator over the interfaces, to which this frame is addressed.
     pub fn interface_iterator(&self) -> impl Iterator<Item = usize> + '_ {
         let byte = self.header_buffer()[3];
-        (0..WiFi::INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
+        (0..INTERFACE_COUNT).filter(move |interface| check_bit!(byte, bit!(interface + 4)))
     }
     /// Unknown RX state.
     ///
@@ -255,23 +241,6 @@ impl Drop for BorrowedBuffer<'_> {
         self.dma_list.lock(|dma_list| {
             dma_list.borrow_mut().recycle(self.dma_descriptor);
         });
-    }
-}
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-/// The bank of the RX filter.
-pub enum RxFilterBank {
-    /// Basic Service Set Identifier (BSSID)
-    BSSID,
-    /// Receiver Address
-    ReceiverAddress,
-}
-impl RxFilterBank {
-    const fn into_bits(self) -> usize {
-        match self {
-            Self::BSSID => 0,
-            Self::ReceiverAddress => 1,
-        }
     }
 }
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -317,7 +286,7 @@ pub struct TxParameters {
     /// The maximum amount of time an ACK can take to arrive.
     pub ack_timeout: usize,
     /// The key slot to be used for encryption.
-    pub key_slot: Option<usize>,
+    pub key_slot: Option<u8>,
 }
 impl Default for TxParameters {
     fn default() -> Self {
@@ -346,168 +315,49 @@ pub enum ScanningMode {
 /// A [Result] returned by the Wi-Fi driver.
 pub type WiFiResult<T> = Result<T, WiFiError>;
 
-/// The time the MAC clock was enabled in microseconds.
-static MAC_SYSTEM_TIME_DELTA: AtomicU64 = AtomicU64::new(0);
-
 /// Driver for the Wi-Fi peripheral.
 ///
 /// WARNING: Currently dropping the driver is not properly implemented.
 pub struct WiFi<'res> {
-    dma_list: &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList<'static>>>,
+    dma_list: &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>,
+    ll_driver: &'res LowLevelDriver,
     current_channel: AtomicU8,
     sequence_number: AtomicU16,
     tx_slot_queue: TxSlotQueue,
-    _phy_clock_guard: PhyClockGuard<'static>,
 }
 impl<'res> WiFi<'res> {
-    #[cfg(any(feature = "esp32", feature = "esp32s2"))]
-    /// The number of "interfaces" supported by the hardware.
-    pub const INTERFACE_COUNT: usize = 4;
-
-    /// The number of key slots the hardware has.
-    pub const KEY_SLOT_COUNT: usize = 25;
-
-    /// Enable the Wi-Fi power domain.
-    fn enable_wifi_power_domain() {
-        unsafe {
-            let rtc_cntl = &*LPWR::ptr();
-            trace!("Enabling wifi power domain.");
-            rtc_cntl
-                .dig_pwc()
-                .modify(|_, w| w.wifi_force_pd().clear_bit());
-
-            rtc_cntl
-                .dig_iso()
-                .modify(|_, w| w.wifi_force_iso().clear_bit());
-        }
-    }
-    fn enable_wifi_modem_clock() {
-        unsafe { WIFI::steal() }.enable_modem_clock(true);
-    }
-    /// Enable the PHY.
-    fn phy_enable() -> PhyClockGuard<'static> {
-        let clock_guard = unsafe { WIFI::steal() }.enable_phy_clock();
-        let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
-        let init_data = &PHY_INIT_DATA_DEFAULT;
-        trace!("Enabling PHY.");
-        unsafe {
-            register_chipv7_phy(
-                init_data,
-                &mut cal_data as *mut _ as *mut esp_phy_calibration_data_t,
-                esp_phy_calibration_mode_t_PHY_RF_CAL_FULL,
-            );
-        }
-        clock_guard
-    }
-    /// Reset the MAC.
-    fn reset_mac() {
-        let mut wifi = unsafe { WIFI::steal() };
-        trace!("Reseting MAC.");
-        wifi.reset_wifi_mac();
-        wifi.register_block()
-            .ctrl()
-            .modify(|r, w| unsafe { w.bits(r.bits() & 0x7fffffff) });
-    }
-    /// Initialize the MAC.
-    unsafe fn init_mac() {
-        trace!("Initializing MAC.");
-        WIFI::regs()
-            .ctrl()
-            .modify(|r, w| unsafe { w.bits(r.bits() & 0xffffe800) });
-    }
-    /// Deinitialize the MAC.
-    unsafe fn deinit_mac() {
-        trace!("Deinitializing MAC.");
-        WIFI::regs().ctrl().modify(|r, w| unsafe {
-            w.bits(r.bits() | 0x17ff);
-            while r.bits() & 0x2000 != 0 {}
-            w
-        });
-    }
-    /// Set the interrupt handler.
-    fn set_isr() {
-        trace!("Setting interrupt handler.");
-        #[cfg(target_arch = "xtensa")]
-        let cpu_interrupt = CpuInterrupt::Interrupt0LevelPriority1;
-        #[cfg(target_arch = "riscv32")]
-        let cpu_interrupt = CpuInterrupt::Interrupt1;
-        unsafe {
-            map(Cpu::current(), Interrupt::WIFI_MAC, cpu_interrupt);
-            bind_interrupt(Interrupt::WIFI_MAC, interrupt_handler);
-            #[cfg(pwr_interrupt_present)]
-            {
-                map(Cpu::current(), Interrupt::WIFI_PWR, cpu_interrupt);
-                bind_interrupt(Interrupt::WIFI_PWR, interrupt_handler);
-            }
-        };
-        enable(Interrupt::WIFI_MAC, Priority::Priority1).unwrap();
-        #[cfg(pwr_interrupt_present)]
-        enable(Interrupt::WIFI_PWR, Priority::Priority1).unwrap();
-    }
-    fn ic_enable() {
-        trace!("ic_enable");
-        unsafe {
-            hal_init();
-        }
-        Self::set_isr();
-    }
-    fn crypto_init() {
-        let wifi = unsafe { WIFI::steal() };
-        // We enable hardware crypto for all interfaces.
-        wifi.register_block()
-            .crypto_control()
-            .interface_crypto_control_iter()
-            .for_each(|interface_crypto_control| {
-                interface_crypto_control.write(|w| unsafe { w.bits(0x0003_0000) });
-            });
-        wifi.register_block()
-            .crypto_control()
-            .general_crypto_control()
-            .reset();
-    }
     /// Initialize the WiFi peripheral.
     pub fn new<const BUFFER_COUNT: usize>(
-        _wifi: WIFI,
+        wifi: WIFI<'res>,
         _adc2: ADC2,
         wifi_resources: &'res mut WiFiResources<BUFFER_COUNT>,
     ) -> Self {
         trace!("Initializing WiFi.");
-        Self::enable_wifi_power_domain();
-        Self::enable_wifi_modem_clock();
-        let phy_clock_guard = Self::phy_enable();
-        let start_time = Instant::now();
-        Self::reset_mac();
-        unsafe {
-            Self::init_mac();
-        }
-        Self::ic_enable();
+        let ll_driver = LowLevelDriver::new(wifi);
 
-        // This is technically already done in `hal_init`, but I want to replace that eventually,
-        // so I'm trying to gradually move more and more parts out.
-        Self::crypto_init();
-        unsafe { ll::set_rx_enabled(true) };
+        ll_driver.configure_interrupt(
+            WiFiInterrupt::Mac,
+            CpuInterrupt::Interrupt0LevelPriority1,
+            mac_handler,
+        );
+
+        #[cfg(pwr_interrupt_present)]
+        ll_driver.configure_interrupt(
+            WiFiInterrupt::Pwr,
+            CpuInterrupt::Interrupt2LevelPriority1,
+            pwr_handler,
+        );
+
+        let (dma_list, ll_driver) = unsafe { wifi_resources.init(ll_driver) };
 
         let temp = Self {
             current_channel: AtomicU8::new(1),
-            dma_list: unsafe { wifi_resources.init() },
+            ll_driver,
+            dma_list,
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
-            _phy_clock_guard: phy_clock_guard,
         };
-        // System should always be ahead of MAC time, since the MAC timer gets started after the
-        // System timer.
-        MAC_SYSTEM_TIME_DELTA.store(
-            esp_hal::time::Instant::now()
-                .duration_since_epoch()
-                .as_micros()
-                - temp.mac_time() as u64,
-            Ordering::Relaxed,
-        );
         temp.set_channel(1).unwrap();
-        trace!(
-            "WiFi MAC init complete. Took {} µs",
-            start_time.elapsed().as_micros()
-        );
         temp
     }
     /// Clear all currently pending frames in the RX queue.
@@ -541,122 +391,68 @@ impl<'res> WiFi<'res> {
             dma_descriptor: dma_list_item,
         }
     }
+    /// Wait for TX to complete on a queue.
+    async fn wait_tx_done(&self, queue: HardwareTxQueue) -> WiFiResult<()> {
+        match HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
+            .wait()
+            .await
+        {
+            HardwareTxResult::Success => Ok(()),
+            HardwareTxResult::Timeout => Err(WiFiError::TxTimeout),
+            HardwareTxResult::Collision => Err(WiFiError::TxCollision),
+        }
+    }
     /// Set the packet for transmission.
     async fn transmit_internal(
         &self,
         dma_list_item: Pin<&DmaDescriptor>,
         tx_parameters: &TxParameters,
         duration: u16,
-        slot: &BorrowedTxSlot<'_>,
+        queue: HardwareTxQueue,
         ack_for_interface: Option<usize>,
     ) -> WiFiResult<()> {
-        let length = dma_list_item.len();
-        let reversed_slot = 4 - slot.deref();
-
         let wifi = WIFI::regs();
 
-        let tx_slot_config = wifi.tx_slot_config(reversed_slot);
-        tx_slot_config
-            .config()
-            .write(|w| unsafe { w.timeout().bits(tx_parameters.ack_timeout as u16) });
+        let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
 
-        tx_slot_config.plcp0().modify(|_, w| unsafe {
-            w.dma_addr()
-                .bits(dma_list_item.get_ref() as *const _ as u32)
-                .wait_for_ack()
-                .bit(ack_for_interface.is_some())
+        self.ll_driver
+            .set_channel_access_parameters(queue, tx_parameters.ack_timeout, 0, 0);
+        self.ll_driver
+            .set_plcp0(queue, dma_list_item, ack_for_interface.is_some());
+        self.ll_driver.set_plcp1(
+            queue,
+            tx_parameters.rate,
+            dma_list_item.len(),
+            ack_for_interface.unwrap_or_default(),
+            tx_parameters.key_slot,
+        );
+        self.ll_driver.set_plcp2(queue);
+        self.ll_driver.set_duration(queue, duration);
+
+        if let Some((mcs, is_short_gi)) = tx_parameters.rate.ht_paramters() {
+            self.ll_driver
+                .set_ht_parameters(queue, mcs, is_short_gi, dma_list_item.len());
+        }
+        // This compensates for other slots being marked as done, without it being used at all.
+        hardware_tx_result_signal.reset();
+        self.ll_driver.start_tx_queue(queue);
+
+        // This will reset the slot, once the drop guard goes out of scope, or the future is
+        // dropped.
+        let tx_done_wait_drop_guard = DropGuard::new(|| {
+            self.ll_driver.tx_done(queue);
+            hardware_tx_result_signal.reset();
         });
-
-        let rate = tx_parameters.rate;
-
-        wifi.plcp1(reversed_slot).write(|w| unsafe {
-            let w = if let Some(interface) = ack_for_interface {
-                w.interface_id().bits(interface as u8)
-            } else {
-                w
+        // We wait for the transmission to complete here.
+        self.wait_tx_done(queue).await.inspect(|_| {
+            if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
+                self.ll_driver.run_power_control();
+                FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
             }
-            .len()
-            .bits(length as u16)
-            .is_80211_n()
-            .bit(rate.is_ht())
-            .rate()
-            .bits(rate as u8);
-            if let Some(key_slot) = tx_parameters.key_slot {
-                w.key_slot_id().bits(key_slot as u8)
-            } else {
-                w
-            }
-        });
-        wifi.plcp2(reversed_slot).write(|w| w.unknown().bit(true));
-        let duration = duration as u32;
-        wifi.duration(reversed_slot)
-            .write(|w| unsafe { w.bits(duration | (duration << 0x10)) });
-        if rate.is_ht() {
-            wifi.ht_sig(reversed_slot).write(|w| unsafe {
-                w.bits(
-                    (rate as u32 & 0b111)
-                        | ((length as u32 & 0xffff) << 8)
-                        | (0b111 << 24)
-                        | ((rate.is_short_gi() as u32) << 31),
-                )
-            });
-            wifi.ht_unknown(reversed_slot)
-                .write(|w| unsafe { w.length().bits(length as u32 | 0x50000) });
-        }
-        // This also compensates for other slots being marked as done, without it being used at
-        // all.
-        WIFI_TX_SLOTS[**slot].reset();
-        unsafe {
-            ll::set_tx_slot_validity(**slot, true);
-            ll::set_tx_slot_enabled(**slot, true);
-        }
+        })?;
+        tx_done_wait_drop_guard.defuse();
 
-        // Since this is the first and only await point, all the transmit parameters will have been
-        // set on the first poll. If the future gets dropped after the first poll, this would leave
-        // the slot in an invalid state, so we use this construction to reset the slot in that
-        // case.
-        struct CancelOnDrop<'a, 'b> {
-            tx_slot_config: &'a TX_SLOT_CONFIG,
-            slot: &'a BorrowedTxSlot<'b>,
-        }
-        impl CancelOnDrop<'_, '_> {
-            async fn wait_for_tx_complete(self) -> WiFiResult<()> {
-                // Wait for the hardware to confirm transmission.
-                let res = WIFI_TX_SLOTS[**self.slot].wait().await;
-                // NOTE: This isn't done in the proprietary stack, but seems to prevent retransmissions.
-                self.tx_slot_config.plcp0().reset();
-                let res = match res {
-                    TxSlotStatus::Done => {
-                        if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
-                            unsafe { tx_pwctrl_background(1, 0) };
-                            FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
-                        }
-                        Ok(())
-                    }
-                    TxSlotStatus::Collision => Err(WiFiError::TxCollision),
-                    TxSlotStatus::Timeout => Err(WiFiError::TxTimeout),
-                };
-                WIFI_TX_SLOTS[**self.slot].reset();
-                forget(self);
-                res
-            }
-        }
-        impl Drop for CancelOnDrop<'_, '_> {
-            fn drop(&mut self) {
-                unsafe {
-                    ll::set_tx_slot_validity(**self.slot, false);
-                    ll::set_tx_slot_enabled(**self.slot, false);
-                }
-                WIFI_TX_SLOTS[**self.slot].reset();
-            }
-        }
-        let cancel_on_drop = CancelOnDrop {
-            tx_slot_config,
-            slot,
-        };
-        cancel_on_drop.wait_for_tx_complete().await?;
-
-        match wifi.pmd(reversed_slot).read().bits() >> 0xc {
+        match wifi.pmd(queue.hardware_slot()).read().bits() >> 0xc {
             1 => Err(WiFiError::RtsTimeout),
             2 => Err(WiFiError::CtsTimeout),
             5 => Err(WiFiError::AckTimeout),
@@ -749,7 +545,7 @@ impl<'res> WiFi<'res> {
                     dma_descriptor_ref,
                     tx_parameters,
                     duration,
-                    &slot,
+                    HardwareTxQueue::from_hardware_slot(4 - *slot).unwrap(),
                     ack_for_interface,
                 )
                 .await;
@@ -793,16 +589,7 @@ impl<'res> WiFi<'res> {
             return Err(WiFiError::InvalidChannel);
         }
         trace!("Changing channel to {}.", channel_number);
-        unsafe {
-            Self::deinit_mac();
-            #[cfg(nomac_channel_set)]
-            crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
-            #[cfg(not(nomac_channel_set))]
-            crate::ffi::chip_v7_set_chan(channel_number, 0);
-            disable_wifi_agc();
-            Self::init_mac();
-            enable_wifi_agc();
-        }
+        self.ll_driver.set_channel(channel_number);
         self.current_channel
             .store(channel_number, Ordering::Relaxed);
         Ok(())
@@ -812,31 +599,16 @@ impl<'res> WiFi<'res> {
         self.current_channel.load(Ordering::Relaxed)
     }
     /// Get the current MAC time in µs.
-    pub fn mac_time(&self) -> u32 {
-        // We hardcode the addresses here, until PAC support is merged.
-        WIFI::regs().mac_time().read().bits()
+    pub fn mac_time(&self) -> esp_hal::time::Duration {
+        self.ll_driver.mac_time()
     }
     /// Check if that interface is valid.
     pub const fn validate_interface(interface: usize) -> WiFiResult<()> {
-        if interface < Self::INTERFACE_COUNT {
+        if interface < INTERFACE_COUNT {
             Ok(())
         } else {
             Err(WiFiError::InterfaceOutOfBounds)
         }
-    }
-    /// Enable or disable the filter.
-    pub fn set_filter_status(
-        &self,
-        bank: RxFilterBank,
-        interface: usize,
-        enabled: bool,
-    ) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .filter_bank(bank.into_bits())
-            .mask_high(interface)
-            .modify(|_, w| w.enabled().bit(enabled));
-        Ok(())
     }
     /// Specifiy whether the BSSID is checked or not.
     ///
@@ -844,55 +616,48 @@ impl<'res> WiFi<'res> {
     /// but the BSSID is disabled, it will assume that `BSSID == RA`. However setting this to
     /// `false` will stop this behaviour.
     pub fn set_filter_bssid_check(&self, interface: usize, enabled: bool) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .interface_rx_control(interface)
-            .modify(|_, w| w.bssid_check().bit(enabled));
-        Ok(())
+        Self::validate_interface(interface)
+            .inspect(|_| self.ll_driver.set_bssid_check_enable(interface, enabled))
     }
-    /// Write raw value to the `INTERFACE_RX_CONTROL` register.
+    /// Configure a filter.
     ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
-    /// something else than that, you probably want to use one of the other functions.
-    pub fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .interface_rx_control(interface)
-            .write(|w| unsafe { w.bits(val) });
-        Ok(())
-    }
-    /// Read a raw value from the `INTERFACE_RX_CONTROL` register.
-    ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
-    /// something else than that, you probably want to use one of the other functions.
-    pub fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
-        Self::validate_interface(interface)?;
-        Ok(WIFI::regs().interface_rx_control(interface).read().bits())
-    }
-    /// Set the parameters for the filter.
+    /// This will default the mask to an all ones mask, and enable the filter.
     pub fn set_filter(
         &self,
-        bank: RxFilterBank,
         interface: usize,
+        filter_bank: RxFilterBank,
         address: [u8; 6],
+    ) -> WiFiResult<()> {
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver
+                .set_filter_address(interface, filter_bank, &address);
+            self.ll_driver
+                .set_filter_mask(interface, filter_bank, &[0xff; 6]);
+            self.ll_driver
+                .set_filter_enable(interface, filter_bank, true);
+        })
+    }
+    /// Override the mask of a filter.
+    ///
+    /// This doesn't check, if the filter is actually enabled.
+    pub fn override_filter_mask(
+        &self,
+        interface: usize,
+        filter_bank: RxFilterBank,
         mask: [u8; 6],
     ) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        let wifi = WIFI::regs();
-        let bank = wifi.filter_bank(bank.into_bits());
-        bank.addr_low(interface)
-            .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
-        bank.addr_high(interface).write(|w| unsafe {
-            w.addr()
-                .bits(u16::from_le_bytes(address[4..].try_into().unwrap()))
-        });
-        bank.mask_low(interface)
-            .write(|w| unsafe { w.bits(u32::from_le_bytes(mask[..4].try_into().unwrap())) });
-        bank.mask_high(interface).write(|w| unsafe {
-            w.mask()
-                .bits(u16::from_le_bytes(mask[4..].try_into().unwrap()))
-        });
-        Ok(())
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver
+                .set_filter_mask(interface, filter_bank, &mask)
+        })
+    }
+
+    /// Clear and disable a filter for an interface and bank.
+    ///
+    /// This will return the filter into its default state.
+    pub fn clear_filter(&self, interface: usize, filter_bank: RxFilterBank) -> WiFiResult<()> {
+        Self::validate_interface(interface)
+            .inspect(|_| self.ll_driver.clear_filter(interface, filter_bank))
     }
     /// Enable or disable scanning mode.
     pub fn set_scanning_mode(
@@ -900,25 +665,17 @@ impl<'res> WiFi<'res> {
         interface: usize,
         scanning_mode: ScanningMode,
     ) -> WiFiResult<()> {
-        Self::validate_interface(interface)?;
-        WIFI::regs()
-            .interface_rx_control(interface)
-            .modify(|_, w| match scanning_mode {
-                ScanningMode::Disabled => {
-                    w.scan_mode().clear_bit().data_and_mgmt_mode().clear_bit()
-                }
-                ScanningMode::BeaconsOnly => {
-                    w.scan_mode().set_bit().data_and_mgmt_mode().clear_bit()
-                }
-                ScanningMode::ManagementAndData => {
-                    w.scan_mode().clear_bit().data_and_mgmt_mode().set_bit()
-                }
-            });
-        Ok(())
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver.set_scanning_mode_parameters(
+                interface,
+                scanning_mode == ScanningMode::BeaconsOnly,
+                scanning_mode == ScanningMode::ManagementAndData,
+            );
+        })
     }
     /// Check if they key slot is valid.
     pub const fn validate_key_slot(key_slot: usize) -> WiFiResult<()> {
-        if key_slot < Self::KEY_SLOT_COUNT {
+        if key_slot < KEY_SLOT_COUNT {
             Ok(())
         } else {
             Err(WiFiError::KeySlotOutOfBounds)
@@ -928,28 +685,7 @@ impl<'res> WiFi<'res> {
     ///
     /// If `key_slot` is larger than or equal to [WiFi::KEY_SLOT_COUNT], an error will be returned.
     pub fn key_slot_in_use(&self, key_slot: usize) -> WiFiResult<bool> {
-        Self::validate_key_slot(key_slot).map(|_| {
-            WIFI::regs()
-                .crypto_control()
-                .crypto_key_slot_state()
-                .read()
-                .key_slot_enable(key_slot as u8)
-                .bit()
-        })
-    }
-    /// Get an iterator over the current state of all key slots.
-    ///
-    /// If the value returned by [Iterator::next] is `true`, the key slot is in use.
-    /// NOTE: The returned iterator only reflects the state, when the function was called. If you
-    /// call either [WiFi::set_key] or [WiFi::delete_key], between calling this function and
-    /// [Iterator::next], the result may no longer be accurate.
-    pub fn key_slot_state_iter(&self) -> impl Iterator<Item = bool> {
-        let key_slot_state = WIFI::regs()
-            .crypto_control()
-            .crypto_key_slot_state()
-            .read()
-            .bits();
-        (0..Self::KEY_SLOT_COUNT).map(move |i| check_bit!(key_slot_state, bit!(i)))
+        Self::validate_key_slot(key_slot).map(|_| self.ll_driver.key_slot_enabled(key_slot))
     }
     /// Set a cryptographic key.
     ///
@@ -969,7 +705,6 @@ impl<'res> WiFi<'res> {
         // of this function. Sadly the compiler still fails to prove some other stuff.
 
         let key = cipher_parameters.key();
-        assert!(key.len() <= 32);
 
         Self::validate_key_slot(key_slot)?;
         Self::validate_interface(interface)?;
@@ -981,74 +716,38 @@ impl<'res> WiFi<'res> {
             return Err(WiFiError::MulticastBitSet);
         }
 
-        let wifi = WIFI::regs();
+        self.ll_driver.set_key_slot_parameters(
+            key_slot,
+            &KeySlotParameters {
+                address,
+                key_id,
+                interface: interface as u8,
+                pairwise: cipher_parameters.is_pairwise(),
+                group: cipher_parameters.is_group(),
+                algorithm: cipher_parameters.algorithm(),
+                wep_104: cipher_parameters.is_wep_104(),
+            },
+        );
+        self.ll_driver.set_key(key_slot, key);
+        self.ll_driver.set_key_slot_enable(key_slot, true);
 
-        let crypto_key_slot = wifi.crypto_key_slot(key_slot);
-
-        crypto_key_slot
-            .addr_low()
-            .write(|w| unsafe { w.bits(u32::from_le_bytes(address[..4].try_into().unwrap())) });
-        crypto_key_slot.addr_high().write(|w| unsafe {
-            w.addr()
-                .bits(u16::from_le_bytes(address[4..].try_into().unwrap()))
-                .algorithm()
-                .bits(cipher_parameters.algorithm())
-                .wep_104()
-                .bit(cipher_parameters.is_wep_104())
-                .bits_256()
-                .bit(cipher_parameters.is_256_bit_key())
-                .pairwise_key()
-                .bit(cipher_parameters.is_pairwise())
-                .group_key()
-                .bit(cipher_parameters.is_group())
-                .unknown()
-                .set_bit()
-                .interface_id()
-                .bits(interface as u8)
-                .key_id()
-                .bits(key_id)
-        });
-
-        wifi.crypto_control()
-            .crypto_key_slot_state()
-            .modify(|_, w| w.key_slot_enable(key_slot as u8).set_bit());
-
-        let is_key_len_word_aligned = (key.len() & 0b11) == 0;
-
-        // Copy the key into the slot.
-        for (i, key_chunk) in key.chunks(4).enumerate().take(8) {
-            let chunk_len = key_chunk.len();
-            assert!(chunk_len <= 4);
-
-            let key_chunk = if !is_key_len_word_aligned && chunk_len != 4 {
-                let mut temp = [0u8; 4];
-                temp[..chunk_len].copy_from_slice(key_chunk);
-                temp
+        let (protect_management_frames, protect_signaling_and_payload) =
+            if let Some(aes_cipher_parameters) = cipher_parameters.aes_cipher_parameters() {
+                (
+                    aes_cipher_parameters.mfp_enabled,
+                    aes_cipher_parameters.spp_enabled,
+                )
             } else {
-                key_chunk.try_into().unwrap()
+                (false, false)
             };
-            crypto_key_slot
-                .key_value(i)
-                .write(|w| unsafe { w.bits(u32::from_le_bytes(key_chunk)) });
-        }
-        wifi.crypto_control()
-            .general_crypto_control()
-            .modify(|r, w| unsafe { w.bits(r.bits() & 0xff0000ff) });
-        wifi.crypto_control()
-            .interface_crypto_control(interface)
-            .modify(|_, w| {
-                w.spp_enable()
-                    .bit(cipher_parameters.is_spp_enabled())
-                    .pmf_disable()
-                    .bit(!cipher_parameters.is_mfp_enabled())
-                    .sms4()
-                    .clear_bit()
-                    .aead_cipher()
-                    .bit(cipher_parameters.is_aead())
-            });
-        wifi.crypto_control()
-            .interface_crypto_control(interface)
-            .modify(|r, w| unsafe { w.bits(r.bits() | 0x10103 & 0x3fff_ffff) });
+        self.ll_driver.set_interface_crypto_parameters(
+            interface,
+            protect_management_frames,
+            protect_signaling_and_payload,
+            cipher_parameters.is_aead(),
+        );
+        // Currently, we do not support WAPI. What a shame...
+        self.ll_driver.set_sms4_status(false);
 
         Ok(())
     }
@@ -1056,21 +755,10 @@ impl<'res> WiFi<'res> {
     ///
     /// This is equivalent to MLME-DELETEKEYS.request with one key descriptor.
     pub fn delete_key(&self, key_slot: usize) -> WiFiResult<()> {
-        WiFi::validate_key_slot(key_slot)?;
-
-        let wifi = WIFI::regs();
-        wifi.crypto_control()
-            .crypto_key_slot_state()
-            .modify(|_, w| w.key_slot_enable(key_slot as u8).clear_bit());
-
-        let crypto_key_slot = wifi.crypto_key_slot(key_slot);
-        crypto_key_slot.addr_low().reset();
-        crypto_key_slot.addr_high().reset();
-        crypto_key_slot
-            .key_value_iter()
-            .for_each(|key_value| key_value.reset());
-
-        Ok(())
+        WiFi::validate_key_slot(key_slot).map(|_| {
+            self.ll_driver.set_key_slot_enable(key_slot, false);
+            self.ll_driver.clear_key_slot(key_slot);
+        })
     }
     /// Dump the entire contents of a key slot.
     pub fn dump_key_slot(&self, key_slot: usize) -> WiFiResult<()> {
@@ -1153,6 +841,10 @@ impl<'res> WiFi<'res> {
             "Enabled Key Slots: {:?}",
             &enabled_key_slots[..enabled_slot_count]
         );
+    }
+    /// Log stats about the DMA list.
+    pub fn log_dma_list_stats(&self) {
+        self.dma_list.lock(|dma_list| dma_list.borrow().log_stats())
     }
 }
 impl Drop for WiFi<'_> {

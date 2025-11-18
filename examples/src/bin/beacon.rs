@@ -6,7 +6,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::efuse::Efuse;
-use esp_hal_embassy::main;
+use esp_rtos::main;
 use esp_wifi_hal::{TxParameters, WiFiRate};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
@@ -30,7 +30,7 @@ async fn main(_spawner: Spawner) {
     embassy_init(peripherals.TIMG0);
     let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
-    let _ = wifi.set_channel(6);
+    let _ = wifi.set_channel(1);
     let module_mac_address = Efuse::read_base_mac_address();
     let module_mac_address = MACAddress::new(module_mac_address);
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));

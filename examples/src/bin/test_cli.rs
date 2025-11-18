@@ -23,7 +23,7 @@ use esp_hal::{
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{BorrowedBuffer, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate, INTERFACE_COUNT};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
@@ -254,6 +254,7 @@ fn dump_command(wifi: &WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let integer_nf = (nf_qdbm & !0b11) / 4;
     let _ = writeln!(uart0_tx, "Noise floor: {integer_nf}.{decimal_nf} dBm");
     }
+    wifi.log_dma_list_stats();
 }
 fn parse_mac(mac_str: &str) -> Option<MACAddress> {
     let mut mac = [0x00u8; 6];
@@ -275,7 +276,7 @@ fn parse_interface(
             let _ = writeln!(
                 uart0_tx,
                 "Expected argument [interface], valid banks are 0-{}",
-                WiFi::INTERFACE_COUNT
+                INTERFACE_COUNT
             );
             None
         }
@@ -287,7 +288,7 @@ fn filter_command<'a>(
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let bank = match args.next() {
-        Some("BSSID") => RxFilterBank::BSSID,
+        Some("BSSID") => RxFilterBank::Bssid,
         Some("RA") => RxFilterBank::ReceiverAddress,
         _ => {
             let _ = writeln!(
@@ -310,13 +311,7 @@ fn filter_command<'a>(
                 let _ = writeln!(uart0_tx, "The provided MAC address was invalid.");
                 return;
             };
-            let _ = wifi.set_filter(bank, interface, *mac_address, *BROADCAST);
-        }
-        Some("enable") => {
-            let _ = wifi.set_filter_status(bank, interface, true);
-        }
-        Some("disable") => {
-            let _ = wifi.set_filter_status(bank, interface, false);
+            let _ = wifi.set_filter(interface, bank, *mac_address);
         }
         None => {
             let _ = writeln!(
@@ -576,7 +571,7 @@ fn find_last_codepoint(bytes: &[u8]) -> usize {
     0
 }
 */
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     heap_allocator!(size: 32 * 1024);
 

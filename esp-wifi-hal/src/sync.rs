@@ -9,24 +9,18 @@ use embassy_sync::blocking_mutex;
 use esp_hal::asynch::AtomicWaker;
 use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
 
-use crate::DefaultRawMutex;
+use crate::{ll::HardwareTxResult, DefaultRawMutex};
 
-/// The status of a TX slot that is in use.
-pub enum TxSlotStatus {
-    Done,
-    Timeout,
-    Collision,
-}
 /// A primitive for signaling the status of a TX slot.
-pub struct TxSlotStateSignal {
+pub struct HardwareTxResultSignal {
     state: AtomicU8,
     waker: AtomicWaker,
 }
-impl TxSlotStateSignal {
+impl HardwareTxResultSignal {
     /// A transmission is currently pending or the slot is inactive.
     const PENDING_OR_INACTIVE: u8 = 0;
     /// The tranmission has completed successfully.
-    const DONE: u8 = 1;
+    const SUCCESS: u8 = 1;
     /// A timeout occured while transmitting.
     const TIMEOUT: u8 = 2;
     /// A collision occured while transmitting.
@@ -44,27 +38,27 @@ impl TxSlotStateSignal {
             .store(Self::PENDING_OR_INACTIVE, Ordering::Relaxed);
     }
     /// Signal a slot state.
-    pub fn signal(&self, slot_status: TxSlotStatus) {
+    pub fn signal(&self, slot_status: HardwareTxResult) {
         self.state.store(
             match slot_status {
-                TxSlotStatus::Done => Self::DONE,
-                TxSlotStatus::Timeout => Self::TIMEOUT,
-                TxSlotStatus::Collision => Self::COLLISION,
+                HardwareTxResult::Success => Self::SUCCESS,
+                HardwareTxResult::Timeout => Self::TIMEOUT,
+                HardwareTxResult::Collision => Self::COLLISION,
             },
             Ordering::Relaxed,
         );
         self.waker.wake();
     }
     /// Wait for a slot state change.
-    pub fn wait(&self) -> impl Future<Output = TxSlotStatus> + use<'_> {
+    pub fn wait(&self) -> impl Future<Output = HardwareTxResult> + use<'_> {
         poll_fn(|cx| {
             let state = self.state.load(Ordering::Acquire);
             if state != Self::PENDING_OR_INACTIVE {
                 self.reset();
                 Poll::Ready(match state {
-                    Self::DONE => TxSlotStatus::Done,
-                    Self::TIMEOUT => TxSlotStatus::Timeout,
-                    Self::COLLISION => TxSlotStatus::Collision,
+                    Self::SUCCESS => HardwareTxResult::Success,
+                    Self::TIMEOUT => HardwareTxResult::Timeout,
+                    Self::COLLISION => HardwareTxResult::Collision,
                     _ => unreachable!(),
                 })
             } else {
@@ -155,7 +149,7 @@ impl TxSlotQueue {
         }
     }
     /// Asynchronously wait for a new slot to become available.
-    pub async fn wait_for_slot(&self) -> BorrowedTxSlot {
+    pub async fn wait_for_slot(&self) -> BorrowedTxSlot<'_> {
         let slot = poll_fn(|cx| {
             self.state.lock(|rc| {
                 let mut state = rc.borrow_mut();
@@ -174,5 +168,30 @@ impl TxSlotQueue {
             state: &self.state,
             slot,
         }
+    }
+}
+/// A drop guard, which executes the provided closure on drop.
+pub struct DropGuard<F: FnMut()> {
+    drop_closure: F
+}
+impl<F: FnMut()> DropGuard<F> {
+    #[inline]
+    /// Create a new drop guard.
+    pub const fn new(drop_closure: F) -> Self {
+        Self {
+            drop_closure
+        }
+    }
+    #[inline]
+    /// Defuse the drop guard.
+    ///
+    /// This will prevent the drop closure from being run.
+    pub const fn defuse(self) {
+        core::mem::forget(self);
+    }
+}
+impl<F: FnMut()> Drop for DropGuard<F> {
+    fn drop(&mut self) {
+        (self.drop_closure)();
     }
 }

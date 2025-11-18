@@ -90,7 +90,7 @@ pub enum CipherParameters<'a> {
 }
 impl CipherParameters<'_> {
     /// Get the [AesCipherParameters] if any.
-    pub const fn aes_cipher_parameters(&self) -> Option<&AesCipherParameters> {
+    pub const fn aes_cipher_parameters(&self) -> Option<&AesCipherParameters<'_>> {
         match self {
             CipherParameters::Ccmp(parameters) => Some(parameters),
             // CipherParameters::Gcmp(parameters) => Some(parameters),

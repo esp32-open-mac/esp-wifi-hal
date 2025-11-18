@@ -41,8 +41,8 @@ pub fn print_key<'buf>(key: &[u8; 16], buf: &'buf mut [u8; 32]) -> &'buf str {
 }
 /// Utility to set and enable the filters.
 pub fn setup_filters(wifi: &WiFi, ra: [u8; 6], bssid: [u8; 6]) {
-    let _ = wifi.set_filter(RxFilterBank::ReceiverAddress, 0, ra);
-    let _ = wifi.set_filter(RxFilterBank::Bssid, 0, bssid);
+    let _ = wifi.set_filter(0, RxFilterBank::ReceiverAddress, ra);
+    let _ = wifi.set_filter(0, RxFilterBank::Bssid, bssid);
 }
 /// Utility to set a key, with some basic parameters.
 pub fn insert_key(

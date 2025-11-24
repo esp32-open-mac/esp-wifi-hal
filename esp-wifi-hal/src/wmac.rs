@@ -4,6 +4,7 @@ use core::{
     ops::Deref,
     pin::{pin, Pin},
 };
+use esp_phy::{PhyController, PhyInitGuard};
 use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{
@@ -14,13 +15,12 @@ use crate::{
     CipherParameters, WiFiRate,
 };
 use embassy_sync::blocking_mutex::{self};
-use embassy_time::Instant;
 use esp_hal::{
-    clock::{ModemClockController, PhyClockGuard},
+    clock::ModemClockController,
     dma::{DmaDescriptor, Owner},
+    handler,
     interrupt::{bind_interrupt, enable, map, CpuInterrupt, Priority},
     peripherals::{Interrupt, ADC2, LPWR, WIFI},
-    ram,
     system::Cpu,
 };
 use esp_wifi_sys::include::{
@@ -47,8 +47,8 @@ static WIFI_TX_SLOTS: [TxSlotStateSignal; 5] = [EMPTY_SLOT; 5];
 // We run tx_pwctrl_background every four transmissions.
 static FRAMES_SINCE_LAST_TXPWR_CTRL: AtomicU8 = AtomicU8::new(0);
 
-#[ram]
-extern "C" fn interrupt_handler() {
+#[handler]
+fn wifi_handler() {
     // We don't want to have to steal this all the time.
     let wifi = WIFI::regs();
 
@@ -357,7 +357,7 @@ pub struct WiFi<'res> {
     current_channel: AtomicU8,
     sequence_number: AtomicU16,
     tx_slot_queue: TxSlotQueue,
-    _phy_clock_guard: PhyClockGuard<'static>,
+    _phy_init_guard: PhyInitGuard<'static>,
 }
 impl<'res> WiFi<'res> {
     #[cfg(any(feature = "esp32", feature = "esp32s2"))]
@@ -385,8 +385,8 @@ impl<'res> WiFi<'res> {
         unsafe { WIFI::steal() }.enable_modem_clock(true);
     }
     /// Enable the PHY.
-    fn phy_enable() -> PhyClockGuard<'static> {
-        let clock_guard = unsafe { WIFI::steal() }.enable_phy_clock();
+    fn phy_enable() -> PhyInitGuard<'static> {
+        let init_guard = unsafe { WIFI::steal() }.enable_phy();
         let mut cal_data = [0u8; size_of::<esp_phy_calibration_data_t>()];
         let init_data = &PHY_INIT_DATA_DEFAULT;
         trace!("Enabling PHY.");
@@ -397,7 +397,7 @@ impl<'res> WiFi<'res> {
                 esp_phy_calibration_mode_t_PHY_RF_CAL_FULL,
             );
         }
-        clock_guard
+        init_guard
     }
     /// Reset the MAC.
     fn reset_mac() {
@@ -433,11 +433,11 @@ impl<'res> WiFi<'res> {
         let cpu_interrupt = CpuInterrupt::Interrupt1;
         unsafe {
             map(Cpu::current(), Interrupt::WIFI_MAC, cpu_interrupt);
-            bind_interrupt(Interrupt::WIFI_MAC, interrupt_handler);
+            bind_interrupt(Interrupt::WIFI_MAC, wifi_handler.handler());
             #[cfg(pwr_interrupt_present)]
             {
                 map(Cpu::current(), Interrupt::WIFI_PWR, cpu_interrupt);
-                bind_interrupt(Interrupt::WIFI_PWR, interrupt_handler);
+                bind_interrupt(Interrupt::WIFI_PWR, wifi_handler.handler());
             }
         };
         enable(Interrupt::WIFI_MAC, Priority::Priority1).unwrap();
@@ -471,11 +471,17 @@ impl<'res> WiFi<'res> {
         _adc2: ADC2,
         wifi_resources: &'res mut WiFiResources<BUFFER_COUNT>,
     ) -> Self {
+        #[cfg(esp32)]
+        {
+            use esp_phy::MacTimeExt;
+            unsafe { WIFI::steal() }.set_mac_time_update_cb(|duration| {
+                MAC_SYSTEM_TIME_DELTA.fetch_add(Ordering::Relaxed, duration.as_micros());
+            });
+        }
         trace!("Initializing WiFi.");
         Self::enable_wifi_power_domain();
         Self::enable_wifi_modem_clock();
-        let phy_clock_guard = Self::phy_enable();
-        let start_time = Instant::now();
+        let phy_init_guard = Self::phy_enable();
         Self::reset_mac();
         unsafe {
             Self::init_mac();
@@ -492,22 +498,9 @@ impl<'res> WiFi<'res> {
             dma_list: unsafe { wifi_resources.init() },
             sequence_number: AtomicU16::new(0),
             tx_slot_queue: TxSlotQueue::new(0..5),
-            _phy_clock_guard: phy_clock_guard,
+            _phy_init_guard: phy_init_guard,
         };
-        // System should always be ahead of MAC time, since the MAC timer gets started after the
-        // System timer.
-        MAC_SYSTEM_TIME_DELTA.store(
-            esp_hal::time::Instant::now()
-                .duration_since_epoch()
-                .as_micros()
-                - temp.mac_time() as u64,
-            Ordering::Relaxed,
-        );
         temp.set_channel(1).unwrap();
-        trace!(
-            "WiFi MAC init complete. Took {} µs",
-            start_time.elapsed().as_micros()
-        );
         temp
     }
     /// Clear all currently pending frames in the RX queue.
@@ -846,28 +839,30 @@ impl<'res> WiFi<'res> {
     pub fn set_filter_bssid_check(&self, interface: usize, enabled: bool) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .modify(|_, w| w.bssid_check().bit(enabled));
         Ok(())
     }
     /// Write raw value to the `INTERFACE_RX_CONTROL` register.
     ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
+    /// # Safety
+    /// This exists mostly for debugging purposes, so if you find yourself using this for
     /// something else than that, you probably want to use one of the other functions.
-    pub fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
+    pub unsafe fn write_rx_policy_raw(&self, interface: usize, val: u32) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .write(|w| unsafe { w.bits(val) });
         Ok(())
     }
     /// Read a raw value from the `INTERFACE_RX_CONTROL` register.
     ///
-    /// NOTE: This exists mostly for debugging purposes, so if you find yourself using this for
+    /// # Safety
+    /// This exists mostly for debugging purposes, so if you find yourself using this for
     /// something else than that, you probably want to use one of the other functions.
-    pub fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
+    pub unsafe fn read_rx_policy_raw(&self, interface: usize) -> WiFiResult<u32> {
         Self::validate_interface(interface)?;
-        Ok(WIFI::regs().interface_rx_control(interface).read().bits())
+        Ok(WIFI::regs().filter_control(interface).read().bits())
     }
     /// Set the parameters for the filter.
     pub fn set_filter(
@@ -902,7 +897,7 @@ impl<'res> WiFi<'res> {
     ) -> WiFiResult<()> {
         Self::validate_interface(interface)?;
         WIFI::regs()
-            .interface_rx_control(interface)
+            .filter_control(interface)
             .modify(|_, w| match scanning_mode {
                 ScanningMode::Disabled => {
                     w.scan_mode().clear_bit().data_and_mgmt_mode().clear_bit()

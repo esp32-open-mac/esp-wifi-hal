@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
-use esp_hal_embassy::main;
+use esp_rtos::main;
 use esp_wifi_hal::{RxFilterBank, TxParameters, WiFiRate};
 use examples::{common_init, embassy_init, setup_filters, wifi_init, AP_ADDRESS};
 use ieee80211::{

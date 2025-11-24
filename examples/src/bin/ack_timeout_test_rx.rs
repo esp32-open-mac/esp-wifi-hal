@@ -11,14 +11,14 @@ use log::info;
 
 const OTHER_MAC_ADDRESS: MACAddress = MACAddress::new([0x00, 0x80, 0x41, 0x13, 0x37, 0x42]);
 const OWN_MAC_ADDRESS: MACAddress = MACAddress::new([0x00, 0x80, 0x41, 0x13, 0x37, 0x41]);
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
     let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
 
     let _ = wifi.set_channel(get_test_channel());
-    let _ = wifi.write_rx_policy_raw(0, 0);
+    let _ = unsafe { wifi.write_rx_policy_raw(0, 0) };
     loop {
         let received = wifi.receive().await;
         let Ok(generic_frame) = GenericFrame::new(received.mpdu_buffer(), false) else {

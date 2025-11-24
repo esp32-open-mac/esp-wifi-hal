@@ -1,6 +1,6 @@
 // These implementations are taken from esp-wifi.
 
-use esp_hal::{ram, rtc_cntl::RtcClock};
+use esp_hal::{clock::RtcClock, ram};
 
 #[cfg(osi_funcs_required)]
 #[ram]

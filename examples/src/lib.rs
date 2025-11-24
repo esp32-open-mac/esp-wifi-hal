@@ -83,7 +83,7 @@ pub fn common_init() -> Peripherals {
 }
 pub fn embassy_init(timg0: TIMG0<'static>) {
     let timg0 = TimerGroup::<'static>::new(timg0);
-    esp_hal_embassy::init(timg0.timer0);
+    esp_rtos::start(timg0.timer0);
 }
 pub fn wifi_init<'a>(wifi: WIFI<'a>, adc2: ADC2<'a>) -> WiFi<'a> {
     static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();

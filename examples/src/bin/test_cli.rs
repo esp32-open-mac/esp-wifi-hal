@@ -23,7 +23,7 @@ use esp_hal::{
     uart::{Config, RxConfig, Uart, UartRx},
     Async,
 };
-use esp_wifi_hal::{BorrowedBuffer, RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
@@ -427,9 +427,9 @@ async fn s_pol_command<'a>(
     let _ = writeln!(
         uart0_tx,
         "Previous RX policy: {:#08x}",
-        wifi.read_rx_policy_raw(interface).unwrap()
+       unsafe { wifi.read_rx_policy_raw(interface) }.unwrap()
     );
-    let _ = wifi.write_rx_policy_raw(interface, rx_policy);
+    let _ = unsafe { wifi.write_rx_policy_raw(interface, rx_policy) };
     let _ = writeln!(uart0_tx, "New RX policy: {rx_policy:#08x}");
 }
 #[derive(PartialEq, Eq)]
@@ -576,7 +576,7 @@ fn find_last_codepoint(bytes: &[u8]) -> usize {
     0
 }
 */
-#[esp_hal_embassy::main]
+#[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     heap_allocator!(size: 32 * 1024);
 

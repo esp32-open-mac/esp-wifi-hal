@@ -6,7 +6,7 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::efuse::Efuse;
-use esp_hal_embassy::main;
+use esp_rtos::main;
 use esp_wifi_hal::{TxParameters, WiFiRate};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{

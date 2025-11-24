@@ -646,7 +646,7 @@ dependencies = [
 
 [[package]]
 name = "esp-wifi-hal"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "bitfield-struct",
  "cfg-if",

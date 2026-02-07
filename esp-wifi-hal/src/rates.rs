@@ -27,6 +27,7 @@ pub enum PhyMode {
     Ht,
 }
 
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 #[allow(missing_docs)]
@@ -76,6 +77,11 @@ impl WiFiRate {
     pub const fn is_short_gi(&self) -> bool {
         *self as u8 >= 0x18
     }
+    /// Does the rate use the HR/DSSS short preamble.
+    pub const fn is_short_preamble(&self) -> bool {
+        let rate_idx = *self as u8;
+        rate_idx >= 0x05 && rate_idx <= 0x07
+    }
     /// Get the PHY mode of the rate.
     pub const fn phy_mode(&self) -> PhyMode {
         match *self as u8 {
@@ -95,6 +101,20 @@ impl WiFiRate {
         } else {
             None
         }
+    }
+    /// Calculate the airtime (in µs) required for a frame of the specified length.
+    pub fn calculate_airtime_us(&self, frame_length: usize) -> usize {
+        match self.phy_mode() {
+            PhyMode::Dsss => {
+                const PHY_PREAMBLE_BITS: usize = 144;
+                const PHY_HEADER_BITS: usize = 48;
+                let ppdu_bit_num = PHY_PREAMBLE_BITS + PHY_HEADER_BITS + frame_length * 8;
+
+            }
+            PhyMode::Cck => {}
+            _ => {}
+        };
+        todo!()
     }
 }
 // This is a lookup-table for matching index->WiFiRate.
@@ -131,3 +151,25 @@ pub(crate) static RATE_LUT: &[WiFiRate] = &[
     WiFiRate::PhyRateMCS6SGI,
     WiFiRate::PhyRateMCS7SGI,
 ];
+
+trait OfdmRate {
+    /// The total number of subcarriers/FFT buckets per 20 MHz channel.
+    const TOTAL_SUBCARRIER_NUM: usize;
+    /// The number of modulated subcarriers per 20 MHz channel.
+    const MODULATED_SUBCARRIER_NUM: usize;
+    /// The number of pilot subcarriers per 20 MHz channel.
+    const PILOT_SUBCARRIER_NUM: usize;
+    /// The number of data subcarriers per 20 MHz channel.
+    const DATA_SUBCARRIER_NUM: usize;
+    /// The distance between the centers of two subcarriers in Hz.
+    const SUBCARRIER_SPACING_HZ: usize = 20_000_000 / Self::TOTAL_SUBCARRIER_NUM;
+
+    /// The number of bits transmitted in a QAM symbol on a single sub carrier.
+    ///
+    /// The QAM level is two raised to the power of the number of bits per symbol.
+    ///
+    /// NOTE: This does not account for coding at all.
+    fn bits_per_qam_symbol(&self) -> usize;
+    /// The coding rate as numerator and denominator.
+    fn coding_rate(&self) -> (usize, usize);
+}

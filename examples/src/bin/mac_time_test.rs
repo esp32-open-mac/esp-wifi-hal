@@ -2,7 +2,7 @@
 #![no_main]
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_wifi_hal::ScanningMode;
+use esp_wifi_hal::{ll::LowLevelDriver, BorrowedBuffer, ScanningMode, AsyncReceive};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::GenericFrame;
 use log::info;
@@ -11,21 +11,20 @@ use log::info;
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
-    wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);
+    let mut wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let _ = wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);
+    let mut buffers = [const { None::<BorrowedBuffer<'static>> }; 10];
+    for buffer in buffers.iter_mut() {
+        let received = wifi.receive().await;
+        let _ = buffer.insert(received);
+    }
+    unsafe {
+        LowLevelDriver::set_rx_enable(false);
+        LowLevelDriver::set_rx_enable(true);
+    }
+    core::mem::drop(buffers);
     loop {
         let received = wifi.receive().await;
-        let Ok(generic_frame) = GenericFrame::new(received.mpdu_buffer(), false) else {
-            continue;
-        };
-        info!("IN: {:05}", received.corrected_timestamp().as_micros());
-        /*
-        info!(
-            "Duration: {:03}s Delta: {:08}µs Type: {:?}",
-            generic_frame.duration(),
-            received.corrected_timestamp().as_micros() as i32 - wifi.mac_time() as i32,
-            generic_frame.frame_control_field().frame_type()
-        );
-*/
+        info!("Received {} bytes", received.mpdu_buffer().len());
     }
 }

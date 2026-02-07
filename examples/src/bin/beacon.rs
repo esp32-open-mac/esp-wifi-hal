@@ -7,7 +7,7 @@ use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_hal::efuse::Efuse;
 use esp_rtos::main;
-use esp_wifi_hal::{TxParameters, WiFiRate};
+use esp_wifi_hal::prelude::*;
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
@@ -19,7 +19,7 @@ use ieee80211::{
     mac_parser::{MACAddress, BROADCAST},
     mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
     scroll::Pwrite,
-    ssid, supported_rates,
+    ssid, supported_rates
 };
 
 const SSID: &str = "The cake is a lie.";
@@ -28,7 +28,7 @@ const SSID: &str = "The cake is a lie.";
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(1);
     let module_mac_address = Efuse::read_base_mac_address();
@@ -75,14 +75,18 @@ async fn main(_spawner: Spawner) {
         };
         let written = buffer.pwrite(frame, 0).unwrap();
         let _ = wifi
-            .transmit(
-                &mut buffer[..written],
-                &TxParameters {
+            .transmit_oneshot(
+                0,
+                &TxPlcpParameters {
                     rate: WiFiRate::PhyRate1ML,
+                    ..Default::default()
+                },
+                &TxMacParameters {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                None,
+                HardwareTxQueue::Beacon,
+                &mut buffer[..written],
             )
             .await;
         beacon_ticker.next().await;

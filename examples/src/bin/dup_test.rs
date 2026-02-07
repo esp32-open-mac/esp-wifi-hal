@@ -6,7 +6,7 @@ use core::marker::PhantomData;
 use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::efuse::Efuse;
-use esp_wifi_hal::{TxParameters, WiFiRate};
+use esp_wifi_hal::prelude::*;
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
@@ -34,7 +34,7 @@ macro_rules! mk_static {
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);
@@ -78,18 +78,22 @@ async fn main(_spawner: Spawner) {
             },
         };
         let written = buf.pwrite(frame, 0).unwrap();
-        wifi.transmit(
-            &mut buf[..written],
-            &TxParameters {
+        wifi.transmit_oneshot(
+            0,
+            &TxPlcpParameters {
                 rate: if seq_num % 2 == 0 {
                     WiFiRate::PhyRate1ML
                 } else {
                     WiFiRate::PhyRate2ML
                 },
+                ..Default::default()
+            },
+            &TxMacParameters {
                 override_seq_num: true,
                 ..Default::default()
             },
-            None,
+            HardwareTxQueue::Beacon,
+            &mut buf[..written],
         )
         .await
         .unwrap();

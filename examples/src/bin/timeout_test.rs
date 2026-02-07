@@ -3,7 +3,7 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_wifi_hal::{TxErrorBehaviour, TxParameters, WiFiError};
+use esp_wifi_hal::prelude::*;
 use examples::{common_init, embassy_init, wifi_init, AP_ADDRESS};
 use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::BROADCAST, scroll::Pwrite};
 use log::info;
@@ -20,7 +20,7 @@ macro_rules! mk_static {
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let mut wifi = wifi_init(peripherals.WIFI);
     let buf = mk_static!([u8; 300], [0x00u8; 300]);
     let written = buf
         .pwrite(
@@ -37,20 +37,22 @@ async fn main(_spawner: Spawner) {
         .unwrap();
     loop {
         let res = wifi
-            .transmit(
-                &mut buf[..written],
-                &TxParameters {
-                    ack_timeout: 10,
-                    tx_error_behaviour: TxErrorBehaviour::Drop,
+            .transmit_oneshot(
+                0,
+                &TxPlcpParameters::default(),
+                &TxMacParameters {
+                    wait_for_ack: true,
+                    override_seq_num: true,
                     ..Default::default()
                 },
-                Some(0),
+                HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice),
+                &mut buf[..written],
             )
             .await;
         match res {
             Ok(_) => info!("TX success"),
-            Err(WiFiError::TxTimeout) => info!("TX timeout"),
-            Err(WiFiError::TxCollision) => info!("TX collision"),
+            Err(TxError::ChannelAccess(ChannelAccessError::Timeout)) => info!("TX timeout"),
+            Err(TxError::ChannelAccess(ChannelAccessError::Collision)) => info!("TX collision"),
             err => info!("{err:?}"),
         }
         Timer::after_millis(500).await;

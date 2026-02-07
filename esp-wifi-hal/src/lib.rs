@@ -58,26 +58,37 @@ extern crate defmt_or_log;
 #[macro_use]
 extern crate core;
 
-mod crypto;
+/// Asynchronous driver implementation.
+pub mod async_driver;
+/// Borrowed RX buffers.
+pub mod borrowed_buffer;
+/// Support structures for HW crypto.
+pub mod crypto;
 mod dma_list;
 mod ffi;
 pub mod ll;
-mod rates;
+/// Support structures for data rates.
+pub mod rates;
 mod sync;
-mod wmac;
 
 #[cfg(feature = "esp32")]
 use esp32 as esp_pac;
 #[cfg(feature = "esp32s2")]
 use esp32s2 as esp_pac;
 
-pub use crypto::*;
-pub use dma_list::WiFiResources;
-pub use ll::{INTERFACE_COUNT, KEY_SLOT_COUNT, RxFilterBank};
-pub use rates::*;
-pub use wmac::*;
-
 #[cfg(not(feature = "critical_section"))]
 type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;
 #[cfg(feature = "critical_section")]
 type DefaultRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+
+/// Useful items to include by default.
+pub mod prelude {
+    pub use crate::async_driver::*;
+    pub use crate::borrowed_buffer::*;
+    pub use crate::crypto::*;
+    pub use crate::ll::{
+        ChannelAccessError, ControlFrameFilterConfig, EdcaAccessCategory, HardwareTxQueue,
+        MacProtocolError, RxFilterBank, INTERFACE_COUNT, KEY_SLOT_COUNT,
+    };
+    pub use crate::rates::*;
+}

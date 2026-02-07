@@ -4,7 +4,7 @@
 #![no_main]
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_wifi_hal::TxParameters;
+use esp_wifi_hal::{ll::LowLevelDriver, prelude::*};
 use examples::{common_init, embassy_init, get_test_channel, wifi_init};
 use ieee80211::{mac_parser::MACAddress, GenericFrame};
 use log::info;
@@ -15,10 +15,12 @@ const OWN_MAC_ADDRESS: MACAddress = MACAddress::new([0x00, 0x80, 0x41, 0x13, 0x3
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());
-    let _ = unsafe { wifi.write_rx_policy_raw(0, 0) };
+    unsafe {
+        LowLevelDriver::regs().rx_ctrl_filter(0).write(|w| w.bits(0) );
+    }
     loop {
         let received = wifi.receive().await;
         let Ok(generic_frame) = GenericFrame::new(received.mpdu_buffer(), false) else {
@@ -26,7 +28,11 @@ async fn main(_spawner: Spawner) {
         };
         if generic_frame.address_1() == OWN_MAC_ADDRESS {
             let _ = wifi
-                .transmit(
+                .transmit_oneshot(
+                    0,
+                    &TxPlcpParameters::default(),
+                    &TxMacParameters::default(),
+                    HardwareTxQueue::DEFAULT_MANAGEMENT_QUEUE,
                     &mut [
                         0xd4,
                         0x00,
@@ -39,8 +45,6 @@ async fn main(_spawner: Spawner) {
                         OTHER_MAC_ADDRESS[4],
                         OTHER_MAC_ADDRESS[5],
                     ],
-                    &TxParameters::default(),
-                    None,
                 )
                 .await;
             info!("Transmitted software ACK.");

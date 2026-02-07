@@ -7,7 +7,7 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_wifi_hal::TxParameters;
+use esp_wifi_hal::prelude::*;
 use examples::{
     common_init, embassy_init, get_test_channel, setup_filters, wifi_init, AP_ADDRESS, STA_ADDRESS,
 };
@@ -26,10 +26,10 @@ macro_rules! mk_static {
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());
-    setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
+    setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
 
     let buf = mk_static!([u8; 300], [0x00u8; 300]);
     let written = buf
@@ -47,13 +47,12 @@ async fn main(_spawner: Spawner) {
         .unwrap();
     loop {
         let res = wifi
-            .transmit(
+            .transmit_oneshot(
+                0,
+                &TxPlcpParameters::default(),
+                &TxMacParameters::default(),
+                HardwareTxQueue::DEFAULT_MANAGEMENT_QUEUE,
                 &mut buf[..written],
-                &TxParameters {
-                    ack_timeout: 10,
-                    ..Default::default()
-                },
-                Some(0),
             )
             .await;
         if let Err(err) = res {

@@ -1,13 +1,13 @@
-use crate::{
-    ll::LowLevelDriver, BorrowedBuffer, DefaultRawMutex
-};
-use core::{cell::RefCell, mem::MaybeUninit, ptr::NonNull};
+use crate::{borrowed_buffer::BorrowedBuffer, ll::LowLevelDriver};
+use core::{mem::MaybeUninit, ptr::NonNull};
 
-use embassy_sync::blocking_mutex;
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
 
+/// Extended functionality for [DmaDescriptor].
 trait DmaDescriptorExt {
+    /// Get the next [DmaDescriptor].
     fn next(&mut self) -> Option<&mut DmaDescriptor>;
+    /// Set the next [DmaDescriptor].
     fn set_next(&mut self, next: Option<&mut DmaDescriptor>);
 }
 impl DmaDescriptorExt for DmaDescriptor {
@@ -21,42 +21,26 @@ impl DmaDescriptorExt for DmaDescriptor {
     }
 }
 
-const RX_BUFFER_SIZE: usize = 1600;
-
-/// Resources for the Wi-Fi peripheral.
-///
-/// `BUFFER_COUNT` has to be at least 2.
-pub struct WiFiResources<const BUFFER_COUNT: usize> {
-    buffers: [[u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
+pub struct DmaBufferSlab<const BUFFER_COUNT: usize, const BUFFER_SIZE: usize> {
+    buffers: [[u8; BUFFER_SIZE]; BUFFER_COUNT],
     dma_descriptors: [MaybeUninit<DmaDescriptor>; BUFFER_COUNT],
-    dma_list: MaybeUninit<blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>>,
-    ll_driver: MaybeUninit<LowLevelDriver>,
 }
-impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
-    /// Create new DMA resources.
+impl<const BUFFER_COUNT: usize, const BUFFER_SIZE: usize> DmaBufferSlab<BUFFER_COUNT, BUFFER_SIZE> {
+    const _CONST_GUARD: () = {
+        assert!(BUFFER_COUNT >= 2, "BUFFER_COUNT needs to be at least 2");
+        assert!(
+            BUFFER_SIZE >= 1600,
+            "BUFFER_SIZE needs to be at least 1600 bytes"
+        );
+    };
+
     pub const fn new() -> Self {
-        assert!(BUFFER_COUNT >= 2, "BUFFER_COUNT has to be larger than 2.");
         Self {
-            buffers: [[0u8; RX_BUFFER_SIZE]; BUFFER_COUNT],
+            buffers: [[0u8; BUFFER_SIZE]; BUFFER_COUNT],
             dma_descriptors: [MaybeUninit::uninit(); BUFFER_COUNT],
-            dma_list: MaybeUninit::uninit(),
-            ll_driver: MaybeUninit::uninit(),
         }
     }
-    /// Initialize the DMA resources.
-    ///
-    /// SAFETY:
-    /// You must ensure, that this is only used as long as the DMA list lives!
-    pub(crate) unsafe fn init(
-        &mut self,
-        ll_driver: LowLevelDriver,
-    ) -> (
-        &blocking_mutex::Mutex<DefaultRawMutex, RefCell<DMAList>>,
-        &LowLevelDriver,
-    ) {
-        // We already asserted this in `Self::new`, but maybe this helps LLVM.
-        assert!(self.dma_descriptors.len() >= 2);
-
+    pub unsafe fn init(&mut self) -> (NonNull<DmaDescriptor>, NonNull<DmaDescriptor>) {
         // We iterate over and initialize the DMA descriptors in reverse, so that we can set the
         // `next` field directly.
         let mut init_iter = self.dma_descriptors.iter_mut().enumerate().rev().scan(
@@ -70,49 +54,40 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
                     next: *next,
                 };
                 descriptor.reset_for_rx();
-                descriptor.set_size(RX_BUFFER_SIZE);
+                descriptor.set_size(BUFFER_SIZE);
                 descriptor.set_owner(Owner::Dma);
 
-                let descriptor_ref = dma_descriptor.write(descriptor);
+                let descriptor_ptr = NonNull::from(dma_descriptor.write(descriptor));
 
-                *next = descriptor_ref as *mut DmaDescriptor;
+                *next = descriptor_ptr.as_ptr();
 
-                Some(descriptor_ref)
+                Some(descriptor_ptr)
             },
         );
+        // Due to how we initialize them in the iterator, these are reversed.
+        let last_ptr = init_iter.next().unwrap();
+        let base_ptr = init_iter.last().unwrap();
 
-        // Since the iterator is reversed, the last descriptor is the first item of the iterator
-        // and vice versa.
-        let last_ptr = NonNull::from(init_iter.next().unwrap());
-        let base_ptr = NonNull::from(init_iter.last().unwrap());
-
-        let ll_driver = self.ll_driver.write(ll_driver);
-        let dma_list = self
-            .dma_list
-            .write(blocking_mutex::Mutex::new(RefCell::new(DMAList::new(
-                base_ptr,
-                last_ptr,
-                unsafe {
-                    core::mem::transmute::<&LowLevelDriver, &'static LowLevelDriver>(ll_driver)
-                },
-            ))));
-        (dma_list, ll_driver)
+        (base_ptr, last_ptr)
     }
 }
-impl<const BUFFER_COUNT: usize> Default for WiFiResources<BUFFER_COUNT> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The DMA list was empty, so RX could not be started.
+///
+/// Usually something weird is going on, if you want to start RX, but all buffers were taken out of
+/// the list and not returned.
+pub struct DmaListEmptyError;
 
 /// The receive DMA list.
-pub struct DMAList {
+pub struct DmaList {
     rx_chain_ptrs: Option<(NonNull<DmaDescriptor>, NonNull<DmaDescriptor>)>,
     ll_driver: &'static LowLevelDriver,
 }
-impl DMAList {
+impl DmaList {
     /// Instantiate a new DMAList.
-    fn new(
+    pub(crate) fn new(
         base_ptr: NonNull<DmaDescriptor>,
         last_ptr: NonNull<DmaDescriptor>,
         ll_driver: &'static LowLevelDriver,
@@ -154,7 +129,7 @@ impl DMAList {
         if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
             let next = first.next();
             if next.is_none() {
-                warn!("Next was none.");
+                debug!("RX: Next DMA descriptor was none.");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
             first.set_owner(Owner::Cpu);
@@ -217,16 +192,37 @@ impl DMAList {
         #[allow(unused)]
         unsafe {
             let (rx_next, rx_last) = (
-                self.ll_driver.next_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
-                self.ll_driver.last_rx_descriptor().map(|non_null| non_null.as_ptr() as u32),
+                self.ll_driver
+                    .next_rx_descriptor()
+                    .map(|non_null| non_null.as_ptr() as u32),
+                self.ll_driver
+                    .last_rx_descriptor()
+                    .map(|non_null| non_null.as_ptr() as u32),
             );
             info!("DMA list: Next: {:x?} Last: {:x?}", rx_next, rx_last);
         }
     }
+    /// Start receiving frames.
+    ///
+    /// This is only necessary, if you previously explicitly stopped the queue with
+    /// [Self::stop_rx].
+    pub fn restart_rx(&mut self) -> Result<(), DmaListEmptyError> {
+        self.rx_chain_ptrs
+            .map(|(base_ptr, _)| {
+                self.ll_driver.start_rx(base_ptr);
+            })
+            .ok_or(DmaListEmptyError)
+    }
+    /// Stop receiving frames.
+    ///
+    /// You can restart RX using [Self::restart_rx].
+    pub fn stop_rx(&mut self) {
+        self.ll_driver.stop_rx();
+    }
 }
-impl Drop for DMAList {
+impl Drop for DmaList {
     fn drop(&mut self) {
         self.ll_driver.stop_rx();
     }
 }
-unsafe impl Send for DMAList {}
+unsafe impl Send for DmaList {}

@@ -19,7 +19,8 @@ use portable_atomic::AtomicU64;
 
 use crate::{
     esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
-    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background}, WiFiRate,
+    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
+    rates::WiFiRate,
 };
 
 /// Run a reversible sequence of functions either forward or in reverse.
@@ -137,7 +138,7 @@ macro_rules! interrupt_cause_struct {
         ),*
     }) => {
         $(#[$struct_meta])*
-        #[cfg_attr(feature = "defmt", defmt::Format)]
+        #[cfg_attr(feature = "defmt", derive(defmt::Format))]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(C)]
         pub struct $struct_name(u32);
@@ -220,13 +221,16 @@ impl From<WiFiInterrupt> for PacInterrupt {
         }
     }
 }
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// Result of the transmission.
+/// Errors that can occur with channel access.
 ///
-/// This is separate from the MAC TX result, which accounts for ACK timeouts etc.
-pub enum HardwareTxResult {
-    /// TX completed successfully.
-    Success,
+/// If such an error gets raised, nothing was transmitted yet.
+///
+/// Unlike [MacProtocolError], this error type does not have an `Unknown` variant, as it is
+/// determined through the MAC interrupt cause, which indicates both TX and RX events, so it is not
+/// possible to cleanly identify an unknown TX error, as such.
+pub enum ChannelAccessError {
     /// A timeout occured.
     ///
     /// This may be related to the timeout parameter.
@@ -236,38 +240,33 @@ pub enum HardwareTxResult {
     /// This might be caused by internal TX queue scheduling conflicts.
     Collision,
 }
-impl HardwareTxResult {
-    /// Get raw transmission status bits.
-    fn raw_status(&self) -> u8 {
-        let wifi = LowLevelDriver::regs_internal();
-        (match self {
-            HardwareTxResult::Success => wifi.txq_state().tx_complete_status().read().bits(),
-            HardwareTxResult::Timeout => wifi.txq_state().tx_error_status().read().bits() >> 0x10,
-            HardwareTxResult::Collision => wifi.txq_state().tx_error_status().read().bits(),
-        }) as u8
-    }
-    /// Clear slot transmission status bit.
-    fn clear_slot_bit(&self, slot: usize) {
-        let wifi = LowLevelDriver::regs_internal();
-        match self {
-            HardwareTxResult::Success => wifi
-                .txq_state()
-                .tx_complete_clear()
-                .modify(|_, w| w.slot(slot as u8).set_bit()),
-            HardwareTxResult::Timeout => wifi
-                .txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_timeout(slot as u8).set_bit()),
-            HardwareTxResult::Collision => wifi
-                .txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
-        };
-    }
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Errors that can occur with the MAC protocol, like MPDU delivery.
+///
+/// NOTE: Yeah I know, the naming of this and [ChannelAccessError] aren't great, but it's the best
+/// I've got.
+pub enum MacProtocolError {
+    /// No ACK was received within the timeout interval.
+    AckTimeout,
+    /// No CTS was received within the timeout interval.
+    CtsTimeout,
+    /// The specified [ChannelAccessError] occured, while attempting to transmit the RTS.
+    RtsChannelAccessError(ChannelAccessError),
+    /// The key ID in the frame didn't match the one of the specified key slot.
+    ///
+    /// NOTE: This is to some degree a guess, and purely derived from the function name
+    /// `lmacProcessTxseckiderr`. This isn't tested yet.
+    InvalidKeyId,
+    /// An unknown error occured.
+    Unknown {
+        /// Raw value of the PMD register.
+        pmd: u32,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Status of the TX slot.
-pub enum TxSlotStatus {
+pub enum HardwareTxQueueStatus {
     /// The slot is currently disabled and the data in it may be invalid.
     Disabled,
     /// The data in the slot is valid, but the slot is not marked as ready yet.
@@ -275,7 +274,7 @@ pub enum TxSlotStatus {
     /// The data in the slot is valid and it is ready for transmission.
     Ready,
 }
-impl TxSlotStatus {
+impl HardwareTxQueueStatus {
     /// Is the data in the slot valid.
     fn valid(&self) -> bool {
         *self != Self::Disabled
@@ -400,18 +399,24 @@ impl EdcaAccessCategory {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// The hardware TX queues.
+///
+/// Usually you want to use [EdcaAccessCategory::Voice] for non QoS traffic and management frames.
 pub enum HardwareTxQueue {
     #[default]
-    /// Distributed Channel Access Function
+    /// Beacon transmission.
     ///
-    /// This is the default channel access function.
-    Dcf,
+    /// This is very likely the queue for beacon transmission. It likely bypasses all other channel
+    /// access mechanisms, as beacon frames are fairly time critical.
+    Beacon,
     /// Enhanced Distributed Channel Access Function
     ///
     /// This is the modified channel access function used for QoS traffic.
     Edcaf(EdcaAccessCategory),
 }
 impl HardwareTxQueue {
+    /// The default queue used for management frames.
+    pub const DEFAULT_MANAGEMENT_QUEUE: HardwareTxQueue =
+        HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice);
     #[inline]
     /// Get the hardware slot number.
     ///
@@ -422,7 +427,7 @@ impl HardwareTxQueue {
     /// confusing.
     pub const fn hardware_slot(&self) -> usize {
         match *self {
-            Self::Dcf => 4,
+            Self::Beacon => 4,
             Self::Edcaf(access_category) => access_category.hardware_slot(),
         }
     }
@@ -436,7 +441,7 @@ impl HardwareTxQueue {
     /// confusing.
     pub const fn from_hardware_slot(slot: usize) -> Option<Self> {
         if slot == 0 {
-            Some(Self::Dcf)
+            Some(Self::Beacon)
         } else if let Some(edca_ac) = EdcaAccessCategory::from_hardware_slot(slot) {
             Some(Self::Edcaf(edca_ac))
         } else {
@@ -715,7 +720,7 @@ impl LowLevelDriver {
     ///
     /// # Safety
     /// Enabling RX, when the DMA list isn't setup correctly yet, may be incorrect.
-    unsafe fn set_rx_enable(enable_rx: bool) {
+    pub(crate) unsafe fn set_rx_enable(enable_rx: bool) {
         Self::regs_internal()
             .rx_ctrl()
             .modify(|_, w| w.rx_enable().bit(enable_rx));
@@ -939,8 +944,20 @@ impl LowLevelDriver {
     /// Set the parameters for scanning mode.
     ///
     /// We don't entirely know what these parmeters mean.
-    pub fn set_scanning_mode_parameters(&self, interface: usize, beacons: bool, other_frames: bool) {
-        Self::regs_internal().filter_control(interface).modify(|_, w| w.scan_mode().bit(beacons).data_and_mgmt_mode().bit(other_frames));
+    pub fn set_scanning_mode_parameters(
+        &self,
+        interface: usize,
+        beacons: bool,
+        other_frames: bool,
+    ) {
+        Self::regs_internal()
+            .filter_control(interface)
+            .modify(|_, w| {
+                w.scan_mode()
+                    .bit(beacons)
+                    .data_and_mgmt_mode()
+                    .bit(other_frames)
+            });
     }
     #[inline]
     /// Setup RX filtering.
@@ -957,24 +974,59 @@ impl LowLevelDriver {
 
     // TX
 
+    /// Get raw transmission status bits.
+    unsafe fn raw_tx_status(tx_result: Result<(), ChannelAccessError>) -> u8 {
+        let wifi = LowLevelDriver::regs_internal();
+        (match tx_result {
+            Ok(()) => wifi.txq_state().tx_complete_status().read().bits(),
+            Err(ChannelAccessError::Timeout) => {
+                wifi.txq_state().tx_error_status().read().bits() >> 0x10
+            }
+            Err(ChannelAccessError::Collision) => wifi.txq_state().tx_error_status().read().bits(),
+        }) as u8
+    }
+    /// Clear slot transmission status bit.
+    unsafe fn clear_tx_slot_bit(tx_result: Result<(), ChannelAccessError>, slot: usize) {
+        let wifi = LowLevelDriver::regs_internal();
+        match tx_result {
+            Ok(()) => wifi
+                .txq_state()
+                .tx_complete_clear()
+                .modify(|_, w| w.slot(slot as u8).set_bit()),
+            Err(ChannelAccessError::Timeout) => wifi
+                .txq_state()
+                .tx_error_clear()
+                .modify(|_, w| w.slot_timeout(slot as u8).set_bit()),
+            Err(ChannelAccessError::Collision) => wifi
+                .txq_state()
+                .tx_error_clear()
+                .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
+        };
+    }
     #[inline]
     /// Process a TX status.
     ///
     /// The provided closure will be called for each slot, with the [HardwareTxQueue] as a
     /// parameter.
     ///
+    /// NOTE: The reason we encode the TX result using a [Result] is, so that we can reuse the
+    /// [ChannelAccessError] enum in the public API.
+    ///
     /// # Safety
     /// This has to be static, so that it can be called in an ISR, but it is also expected to only
     /// be called from there, since the Wi-Fi peripheral will have to be initialized there.
-    pub unsafe fn process_tx_status(tx_status: HardwareTxResult, f: impl Fn(HardwareTxQueue)) {
-        let raw_status = tx_status.raw_status();
+    pub unsafe fn process_tx_status(
+        tx_result: Result<(), ChannelAccessError>,
+        f: impl Fn(HardwareTxQueue),
+    ) {
+        let raw_status = Self::raw_tx_status(tx_result);
         (0..5)
             .filter(|i| check_bit!(raw_status, bit!(i)))
             .for_each(|queue| {
                 // For some reason the slot numbering needs to be reversed when working with the
                 // interrupt cause register.
                 (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
-                tx_status.clear_slot_bit(queue);
+                Self::clear_tx_slot_bit(tx_result, queue);
             });
     }
     #[inline]
@@ -983,15 +1035,15 @@ impl LowLevelDriver {
     /// # Safety
     /// This is only expected to be called in the MAC ISR handler. For other purposes use
     /// [LowLevelDriver::start_tx_for_slot]
-    pub unsafe fn set_tx_queue_status(queue: HardwareTxQueue, tx_slot_status: TxSlotStatus) {
+    pub unsafe fn set_tx_queue_status(queue: HardwareTxQueue, queue_status: HardwareTxQueueStatus) {
         Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .plcp0()
             .modify(|_, w| {
                 w.slot_valid()
-                    .bit(tx_slot_status.valid())
+                    .bit(queue_status.valid())
                     .slot_enabled()
-                    .bit(tx_slot_status.enabled())
+                    .bit(queue_status.enabled())
             });
     }
     #[inline]
@@ -1000,19 +1052,66 @@ impl LowLevelDriver {
     /// TODO: Investigate what happens, if the DMA descriptor pointer ist zero.
     pub fn start_tx_queue(&self, queue: HardwareTxQueue) {
         unsafe {
-            Self::set_tx_queue_status(queue, TxSlotStatus::Ready);
+            Self::set_tx_queue_status(queue, HardwareTxQueueStatus::Ready);
         }
     }
     #[inline]
     /// Mark the transmission on a queue as done.
     pub fn tx_done(&self, queue: HardwareTxQueue) {
         unsafe {
-            Self::set_tx_queue_status(queue, TxSlotStatus::Disabled);
+            Self::set_tx_queue_status(queue, HardwareTxQueueStatus::Disabled);
         }
         Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .plcp0()
             .reset();
+    }
+    #[inline]
+    /// Returns the result of a transmission from the perspective of the MAC protocol.
+    ///
+    /// NOTE: This does not indicate [ChannelAccessError]'s, as those are indicated through the
+    /// interrupt events. Refer to the docs for [MacProtocolError] for the class of errors this
+    /// returns.
+    ///
+    /// Internally this reads a register called PMD. We do not really know the meaning of that
+    /// acronym, but, among other things, the register indicates MAC protocol errors.
+    pub fn get_tx_mac_protocol_result(
+        &self,
+        queue: HardwareTxQueue,
+    ) -> Result<(), MacProtocolError> {
+        let pmd = Self::regs_internal()
+            .pmd(queue.hardware_slot())
+            .read()
+            .bits();
+        let error = (pmd >> 0xc) & 0xf;
+        let sub_error = pmd & 0xff;
+
+        match error {
+            0 => Ok(()),
+            1 => {
+                if sub_error == 1 || sub_error > 2 {
+                    Err(MacProtocolError::RtsChannelAccessError(
+                        ChannelAccessError::Timeout,
+                    ))
+                } else {
+                    Err(MacProtocolError::Unknown { pmd })
+                }
+            }
+            2 => Err(MacProtocolError::CtsTimeout),
+            4 => {
+                if sub_error == 0xc0 {
+                    Err(MacProtocolError::InvalidKeyId)
+                } else if sub_error == 0 {
+                    Err(MacProtocolError::CtsTimeout)
+                } else if sub_error < 6 && sub_error != 1 {
+                    Err(MacProtocolError::AckTimeout)
+                } else {
+                    Err(MacProtocolError::Unknown { pmd })
+                }
+            }
+            5 => Err(MacProtocolError::AckTimeout),
+            _ => Err(MacProtocolError::Unknown { pmd }),
+        }
     }
     #[inline]
     /// Set parameters for channel access.
@@ -1320,8 +1419,12 @@ impl LowLevelDriver {
         esp_hal::time::Duration::from_micros(offset)
     }
     /// Get the current value of the MAC timer.
-    pub fn mac_time(&self) -> esp_hal::time::Duration {
-        esp_hal::time::Duration::from_micros(Self::regs_internal().mac_time().read().bits() as u64)
+    ///
+    /// # Safety
+    /// This must only be called, when the Wi-Fi peripheral is initialized.
+    pub unsafe fn mac_time() -> esp_hal::time::Instant {
+        esp_hal::time::Instant::EPOCH
+            + esp_hal::time::Duration::from_micros(Self::regs_internal().mac_time().read().bits() as u64)
             + Self::mac_time_offset()
     }
 

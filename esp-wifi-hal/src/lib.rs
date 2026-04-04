@@ -91,4 +91,5 @@ pub mod prelude {
         MacProtocolError, RxFilterBank, INTERFACE_COUNT, KEY_SLOT_COUNT,
     };
     pub use crate::rates::*;
+    pub use crate::sync::DropGuard;
 }

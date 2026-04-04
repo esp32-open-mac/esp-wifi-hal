@@ -20,7 +20,7 @@ use portable_atomic::AtomicU64;
 use crate::{
     esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
     ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
-    rates::WiFiRate,
+    rates::TxPhyRate,
 };
 
 /// Run a reversible sequence of functions either forward or in reverse.
@@ -150,7 +150,7 @@ macro_rules! interrupt_cause_struct {
             }
             #[inline]
             /// Is there no known cause for the interrupt.
-            pub fn is_emtpy(&self) -> bool {
+            pub fn is_empty(&self) -> bool {
                 self.0 == 0
             }
             $(
@@ -260,8 +260,10 @@ pub enum MacProtocolError {
     InvalidKeyId,
     /// An unknown error occured.
     Unknown {
-        /// Raw value of the PMD register.
-        pmd: u32,
+        /// The main error field.
+        error: u8,
+        /// We don't really know.
+        sub_error: u8,
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -346,6 +348,9 @@ pub enum EdcaAccessCategory {
     Voice = 4,
 }
 impl EdcaAccessCategory {
+    /// The default queue used for management frames.
+    pub const DEFAULT_MANAGEMENT_QUEUE: HardwareTxQueue =
+        HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice);
     #[inline]
     /// Get the IEEE 802.11 Access Category Index (ACI).
     pub const fn access_category_index(&self) -> usize {
@@ -414,9 +419,6 @@ pub enum HardwareTxQueue {
     Edcaf(EdcaAccessCategory),
 }
 impl HardwareTxQueue {
-    /// The default queue used for management frames.
-    pub const DEFAULT_MANAGEMENT_QUEUE: HardwareTxQueue =
-        HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice);
     #[inline]
     /// Get the hardware slot number.
     ///
@@ -427,7 +429,7 @@ impl HardwareTxQueue {
     /// confusing.
     pub const fn hardware_slot(&self) -> usize {
         match *self {
-            Self::Beacon => 4,
+            Self::Beacon => 0,
             Self::Edcaf(access_category) => access_category.hardware_slot(),
         }
     }
@@ -462,6 +464,7 @@ pub const INTERFACE_COUNT: usize = 4;
 /// The number of key slots the hardware has.
 pub const KEY_SLOT_COUNT: usize = 25;
 
+#[cfg(feature = "esp32")]
 static MAC_TIME_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// Low level driver for the Wi-Fi peripheral.
@@ -587,7 +590,7 @@ impl LowLevelDriver {
         // This is only required on the ESP32-S2.
         while !intialized
             && cfg!(feature = "esp32s2")
-            && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK == 0
+            && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK != 0
         {}
         // If we are initializing the MAC, we need to clear some bits, by masking the reg, with the
         // MAC_INIT_MASK. On deinit, we need to set the bits we previously cleared.
@@ -1083,8 +1086,8 @@ impl LowLevelDriver {
             .pmd(queue.hardware_slot())
             .read()
             .bits();
-        let error = (pmd >> 0xc) & 0xf;
-        let sub_error = pmd & 0xff;
+        let error = ((pmd >> 0xc) & 0xf) as u8;
+        let sub_error = (pmd & 0xff) as u8;
 
         match error {
             0 => Ok(()),
@@ -1094,7 +1097,7 @@ impl LowLevelDriver {
                         ChannelAccessError::Timeout,
                     ))
                 } else {
-                    Err(MacProtocolError::Unknown { pmd })
+                    Err(MacProtocolError::Unknown { error, sub_error })
                 }
             }
             2 => Err(MacProtocolError::CtsTimeout),
@@ -1106,11 +1109,11 @@ impl LowLevelDriver {
                 } else if sub_error < 6 && sub_error != 1 {
                     Err(MacProtocolError::AckTimeout)
                 } else {
-                    Err(MacProtocolError::Unknown { pmd })
+                    Err(MacProtocolError::Unknown { error, sub_error })
                 }
             }
             5 => Err(MacProtocolError::AckTimeout),
-            _ => Err(MacProtocolError::Unknown { pmd }),
+            _ => Err(MacProtocolError::Unknown { error, sub_error }),
         }
     }
     #[inline]
@@ -1164,7 +1167,7 @@ impl LowLevelDriver {
     pub fn set_plcp1(
         &self,
         queue: HardwareTxQueue,
-        rate: WiFiRate,
+        rate: TxPhyRate,
         frame_length: usize,
         interface: usize,
         key_slot: Option<u8>,
@@ -1175,9 +1178,9 @@ impl LowLevelDriver {
                 w.len()
                     .bits(frame_length as _)
                     .rate()
-                    .bits(rate as _)
+                    .bits(rate.as_hardware_rate())
                     .is_80211_n()
-                    .bit(rate.is_ht())
+                    .bit(matches!(rate, TxPhyRate::Ht(_)))
                     .interface_id()
                     .bits(interface as _)
                     // NOTE: This makes the default value zero, which is a valid key slot ID. However
@@ -1424,7 +1427,9 @@ impl LowLevelDriver {
     /// This must only be called, when the Wi-Fi peripheral is initialized.
     pub unsafe fn mac_time() -> esp_hal::time::Instant {
         esp_hal::time::Instant::EPOCH
-            + esp_hal::time::Duration::from_micros(Self::regs_internal().mac_time().read().bits() as u64)
+            + esp_hal::time::Duration::from_micros(
+                Self::regs_internal().mac_time().read().bits() as u64
+            )
             + Self::mac_time_offset()
     }
 

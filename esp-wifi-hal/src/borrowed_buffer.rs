@@ -8,9 +8,8 @@ use macro_bits::{bit, check_bit};
 use crate::{
     async_driver::WiFi,
     dma_list::DmaList,
-    ll::LowLevelDriver,
-    ll::INTERFACE_COUNT,
-    rates::{WiFiRate, RATE_LUT},
+    ll::{LowLevelDriver, INTERFACE_COUNT},
+    rates::{HrDsssRate, HtRate, OfdmRate, RxPhyRate},
     DefaultRawMutex,
 };
 
@@ -55,7 +54,11 @@ impl BorrowedBuffer<'_> {
     pub fn trailer_length(&self) -> usize {
         let padded_len = self.dma_descriptor.len() - Self::RX_CONTROL_HEADER_LENGTH;
         let delta = self.raw_header().sig_len() as usize - padded_len;
-        delta.div_ceil(4) * 4
+        if delta & 0b11 == 0 {
+            delta
+        } else {
+            (delta & !0b11) + 4
+        }
     }
     /// Calculate the actual unpadded length of the buffer.
     pub fn unpadded_buffer_len(&self) -> usize {
@@ -69,13 +72,14 @@ impl BorrowedBuffer<'_> {
         self.padded_buffer()
             .get(..self.unpadded_buffer_len())
             .unwrap_or_else(|| {
+                /*
                 defmt_or_log::warn!(
-                    "Buffer was shorter then calculated length. Corrected len: {} Padded len: {} SIG len: {} Header: {:02x?}",
+                    "Buffer was shorter then calculated length. Corrected len: {} Padded len: {} SIG len: {} Header: {:02x}",
                     self.unpadded_buffer_len(),
                     self.dma_descriptor.len(),
                     self.raw_header().sig_len(),
                     &self.padded_buffer()[..Self::RX_CONTROL_HEADER_LENGTH]
-                );
+                );*/
                 self.dma_list.lock(|dma_list| dma_list.borrow().log_stats());
                 self.padded_buffer()
             })
@@ -103,7 +107,7 @@ impl BorrowedBuffer<'_> {
     }
     /// The Received Signal Strength Indicator (RSSI).
     pub fn rssi(&self) -> i8 {
-        let rssi = self.header_buffer()[0] as i8;
+        let rssi = self.raw_header().rssi() as i8;
         if cfg!(feature = "esp32") {
             rssi - 96
         } else {
@@ -126,20 +130,35 @@ impl BorrowedBuffer<'_> {
         check_bit!(self.header_buffer()[7], bit!(3))
     }
     /// The phy rate, at which this frame was transmitted.
-    pub fn phy_rate(&self) -> Option<WiFiRate> {
-        let rate_and_sig_mode = self.header_buffer()[1];
-        let (rate, sig_mode) = (rate_and_sig_mode & 0x1f, rate_and_sig_mode >> 6);
-        let rate_idx = if sig_mode == 1 {
-            0x10 + (self.header_buffer()[4] & 0x7f)
-                + if self.header_buffer()[7] >> 7 == 1 {
-                    8 // Add eight for short GI rates.
+    pub fn phy_rate(&self) -> Option<RxPhyRate> {
+        let raw_header = self.raw_header();
+        let cbw40 = raw_header.cwb() == 1;
+        let short_gi = raw_header.sgi() == 1;
+        let mcs = raw_header.mcs() as u8;
+        let rate = raw_header.rate() as u8;
+        match raw_header.sig_mode() {
+            0 => {
+                if rate <= 7 {
+                    HrDsssRate::new(rate % 4, rate / 4 == 1).map(RxPhyRate::HrDsss)
+                } else if rate <= 15 {
+                    Some(RxPhyRate::Ofdm(match rate {
+                        0x0b => OfdmRate::Mbits6,
+                        0x0f => OfdmRate::Mbits9,
+                        0x0a => OfdmRate::Mbits12,
+                        0x0e => OfdmRate::Mbits18,
+                        0x09 => OfdmRate::Mbits24,
+                        0x0d => OfdmRate::Mbits36,
+                        0x08 => OfdmRate::Mbits48,
+                        0x0c => OfdmRate::Mbits54,
+                        _ => unreachable!(),
+                    }))
                 } else {
-                    0
+                    None
                 }
-        } else {
-            rate
-        };
-        RATE_LUT.get(rate_idx as usize).copied()
+            }
+            1 => HtRate::new(mcs, short_gi, cbw40).map(RxPhyRate::Ht),
+            _ => None,
+        }
     }
     /// Check if the frame is for the specified interface.
     pub fn is_frame_for_interface(&self, interface: usize) -> bool {

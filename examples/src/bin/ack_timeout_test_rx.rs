@@ -19,7 +19,9 @@ async fn main(_spawner: Spawner) {
 
     let _ = wifi.set_channel(get_test_channel());
     unsafe {
-        LowLevelDriver::regs().rx_ctrl_filter(0).write(|w| w.bits(0) );
+        LowLevelDriver::regs()
+            .rx_ctrl_filter(0)
+            .write(|w| w.bits(0));
     }
     loop {
         let received = wifi.receive().await;
@@ -32,7 +34,7 @@ async fn main(_spawner: Spawner) {
                     0,
                     &TxPlcpParameters::default(),
                     &TxMacParameters::default(),
-                    HardwareTxQueue::DEFAULT_MANAGEMENT_QUEUE,
+                    EdcaAccessCategory::DEFAULT_MANAGEMENT_QUEUE,
                     &mut [
                         0xd4,
                         0x00,

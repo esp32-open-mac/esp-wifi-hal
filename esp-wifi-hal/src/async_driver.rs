@@ -1,4 +1,4 @@
-use core::{cell::RefCell, future::Future, marker::PhantomData, pin::Pin};
+use core::{cell::RefCell, future::Future, pin::Pin};
 use portable_atomic::{AtomicU16, AtomicU8, Ordering};
 
 use crate::{
@@ -8,18 +8,13 @@ use crate::{
     dma_list::DmaBufferSlab,
     ll::{
         ChannelAccessError, HardwareTxQueue, HardwareTxQueueStatus, KeySlotParameters,
-        LowLevelDriver, MacProtocolError, RxFilterBank, WiFiInterrupt,
+        LowLevelDriver, MacProtocolError, RxFilterBank, WiFiInterrupt, INTERFACE_COUNT,
+        KEY_SLOT_COUNT,
     },
-    ll::{INTERFACE_COUNT, KEY_SLOT_COUNT},
-    rates::WiFiRate,
+    rates::TxPhyRate,
 };
-use embassy_sync::blocking_mutex::{self};
-use esp_hal::{
-    dma::DmaDescriptor,
-    handler,
-    interrupt::CpuInterrupt,
-    peripherals::WIFI,
-};
+use embassy_sync::blocking_mutex;
+use esp_hal::{dma::DmaDescriptor, handler, interrupt::CpuInterrupt, peripherals::WIFI};
 use macro_bits::{bit, check_bit};
 
 use crate::{
@@ -31,7 +26,7 @@ use crate::{
 #[handler]
 fn mac_handler() {
     let cause = unsafe { LowLevelDriver::get_and_clear_mac_interrupt_cause() };
-    if cause.is_emtpy() {
+    if cause.is_empty() {
         return;
     }
 
@@ -172,6 +167,19 @@ pub trait HasLowLevelDriver {
     /// (The author would like to note, that he also managed to shoot himself in the foot numerous
     /// times, with the LL driver.)
     unsafe fn ll_driver_ref(&self) -> &LowLevelDriver;
+
+    /// Get the current MAC time.
+    fn mac_time(&self) -> esp_hal::time::Instant {
+        // # Safety
+        // The LL driver will be alive for 'res, which is at least as long, as the existance of
+        // this struct.
+        unsafe { LowLevelDriver::mac_time() }
+    }
+
+    /// Returns the current channel.
+    fn get_channel(&self) -> u8 {
+        CURRENT_CHANNEL.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -203,10 +211,6 @@ pub trait ChannelControl: HasLowLevelDriver {
         unsafe { self.ll_driver_ref() }.set_channel(channel_number);
         CURRENT_CHANNEL.store(channel_number, Ordering::Relaxed);
         Ok(())
-    }
-    /// Returns the current channel.
-    fn get_channel(&self) -> u8 {
-        CURRENT_CHANNEL.load(Ordering::Relaxed)
     }
 }
 /// Provides control over hardware key slots.
@@ -444,6 +448,11 @@ impl RxInterfaceController<'_> {
         self.interface
     }
 }
+impl HasLowLevelDriver for RxInterfaceController<'_> {
+    unsafe fn ll_driver_ref(&self) -> &LowLevelDriver {
+        self.ll_driver
+    }
+}
 
 /// The channel, we're currently on.
 ///
@@ -469,11 +478,11 @@ pub enum TxErrorBehaviour<'a> {
     /// Retry as many times, as specified.
     ///
     /// With the same rate.
-    RetryUntil(usize),
+    RetryUntil(u8),
     /// Retry with the specified rates.
     ///
     /// Rate control algorithms like this.
-    MultiRateRetry(&'a [WiFiRate]),
+    MultiRateRetry(&'a [TxPhyRate]),
     /// Drop the MPDU.
     #[default]
     Drop,
@@ -483,13 +492,13 @@ impl<'a> TxErrorBehaviour<'a> {
     /// Get an iterator over the rates for each TX attempts.
     pub fn tx_attempt_rate_iter<'b>(
         &'b self,
-        initial_rate: WiFiRate,
-    ) -> impl IntoIterator<Item = WiFiRate> + 'b
+        initial_rate: TxPhyRate,
+    ) -> impl Iterator<Item = TxPhyRate> + Send + Sync + use<'b>
     where
         'b: 'a,
     {
         let tx_attempts = match self {
-            Self::RetryUntil(retries) => *retries + 1,
+            Self::RetryUntil(retries) => *retries as usize + 1,
             Self::MultiRateRetry(rates) => rates.len(),
             Self::Drop => 1,
         };
@@ -514,7 +523,7 @@ impl<'a> TxErrorBehaviour<'a> {
 /// or medium access.
 pub struct TxPlcpParameters {
     /// The transmission data rate.
-    pub rate: WiFiRate,
+    pub rate: TxPhyRate,
     /// Requires using `..Default::default()` initialization, to ensure future backwards
     /// compatibility.
     pub _ne: NonExhaustive,
@@ -578,7 +587,7 @@ impl TxQueueEndpoint<'_> {
         mac_parameters: &'a TxMacParameters,
         error_behaviour: TxErrorBehaviour<'a>,
         mpdu_buf: &'a mut [u8],
-    ) -> impl Future<Output = Result<usize, TxError>> + 'a {
+    ) -> impl Future<Output = Result<u8, TxError>> + Send + 'a {
         self.ll_driver.transmit_with_retry(
             interface,
             plcp_parameters,
@@ -602,7 +611,7 @@ impl TxQueueEndpoint<'_> {
         plcp_parameters: &'a TxPlcpParameters,
         mac_parameters: &'a TxMacParameters,
         mpdu_buf: &'a mut [u8],
-    ) -> impl Future<Output = Result<(), TxError>> + 'a {
+    ) -> impl Future<Output = Result<(), TxError>> + Send + Sync + 'a {
         self.ll_driver.transmit_oneshot(
             interface,
             plcp_parameters,
@@ -611,6 +620,10 @@ impl TxQueueEndpoint<'_> {
             Pin::new(self.dma_descriptor),
             mpdu_buf,
         )
+    }
+    /// The hardware TX queue, to which this endpoint responds.
+    pub const fn hardware_tx_queue(&self) -> HardwareTxQueue {
+        self.queue
     }
 }
 impl HasLowLevelDriver for TxQueueEndpoint<'_> {
@@ -652,7 +665,13 @@ mod private {
         async_driver::{
             HasLowLevelDriver, TxError, TxMacParameters, TxPlcpParameters, WiFi,
             CURRENT_SEQUENCE_NUMBER, FRAMES_SINCE_LAST_TXPWR_CTRL, HARDWARE_TX_RESULT_SIGNALS,
-        }, dma_list::DmaList, ll::{HardwareTxQueue, LowLevelDriver}, prelude::TxErrorBehaviour, rates::WiFiRate, sync::DropGuard, DefaultRawMutex
+        },
+        dma_list::DmaList,
+        ll::{HardwareTxQueue, LowLevelDriver},
+        prelude::TxErrorBehaviour,
+        rates::TxPhyRate,
+        sync::DropGuard,
+        DefaultRawMutex,
     };
 
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -671,7 +690,7 @@ mod private {
         fn setup_tx(
             &self,
             interface: usize,
-            rate: WiFiRate,
+            rate: TxPhyRate,
             mac_parameters: &TxMacParameters,
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
@@ -687,7 +706,7 @@ mod private {
             //    HE and VHT.)
             let ll_driver = unsafe { self.ll_driver_ref() };
 
-            ll_driver.set_channel_access_parameters(queue, 10, 0, 0);
+            ll_driver.set_channel_access_parameters(queue, 10, 2, 2);
             ll_driver.set_plcp0(queue, dma_descriptor, mac_parameters.wait_for_ack);
             ll_driver.set_plcp1(
                 queue,
@@ -699,8 +718,13 @@ mod private {
             ll_driver.set_plcp2(queue);
             ll_driver.set_duration(queue, duration);
 
-            if let Some((mcs, is_short_gi)) = rate.ht_paramters() {
-                ll_driver.set_ht_parameters(queue, mcs, is_short_gi, dma_descriptor.len());
+            if let TxPhyRate::Ht(ht_rate) = rate {
+                ll_driver.set_ht_parameters(
+                    queue,
+                    ht_rate.mcs_index(),
+                    ht_rate.short_gi(),
+                    dma_descriptor.len(),
+                );
             }
         }
         /// Transmit a frame and wait for the transmission to be completed.
@@ -709,7 +733,7 @@ mod private {
         fn transmit_raw<'a>(
             &'a self,
             interface: usize,
-            rate: WiFiRate,
+            rate: TxPhyRate,
             mac_parameters: &'a TxMacParameters,
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
@@ -833,6 +857,7 @@ mod private {
             )
         }
         #[allow(clippy::too_many_arguments)]
+        #[inline(never)]
         /// Transmit a frame and correctly handle errors.
         ///
         /// This will also read the duration from the buffer and configure the hardware with it.
@@ -845,17 +870,16 @@ mod private {
             queue: HardwareTxQueue,
             mut dma_descriptor: Pin<&'a mut DmaDescriptor>,
             mpdu_buf: &mut [u8],
-        ) -> Result<usize, TxError> {
+        ) -> Result<u8, TxError> {
             let duration = self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf)?;
             Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
 
             // We start transmitting and adapt the rate as required. As soon, as a transmission
             // succeeds, we return.
-            let mut last_res = Ok::<usize, TxError>(0);
+            let mut last_res = Ok::<u8, TxError>(0);
 
             for (i, tx_attempt_rate) in error_behaviour
                 .tx_attempt_rate_iter(plcp_parameters.rate)
-                .into_iter()
                 .enumerate()
             {
                 // The transmission will already be started, before the first poll, which ensures
@@ -870,7 +894,7 @@ mod private {
                         Ok(duration),
                     )
                     .await
-                    .map(|_| i);
+                    .map(|_| i as u8);
                 if let Err(err) = last_res {
                     trace!("Retransmitting MPDU due to: {:?}", err);
                 } else {
@@ -964,20 +988,6 @@ impl<'res> HasDmaList<'res> for AsyncRxEndpoint<'res> {
     }
 }
 impl<'res> AsyncReceive<'res> for AsyncRxEndpoint<'res> {}
-
-/// Grants access to the current MAC time.
-pub struct MacTimeAccess<'res> {
-    _phantom: PhantomData<&'res ()>,
-}
-impl MacTimeAccess<'_> {
-    /// Get the current MAC time.
-    pub fn mac_time(&self) -> esp_hal::time::Instant {
-        // # Safety
-        // The LL driver will be alive for 'res, which is at least as long, as the existance of
-        // this struct.
-        unsafe { LowLevelDriver::mac_time() }
-    }
-}
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1082,6 +1092,7 @@ impl<'res> WiFi<'res> {
             },
         }
     }
+    #[inline(never)]
     /// Transmit a frame.
     ///
     /// Returns the amount of retries.
@@ -1104,7 +1115,7 @@ impl<'res> WiFi<'res> {
         error_behaviour: TxErrorBehaviour<'a>,
         queue: HardwareTxQueue,
         mpdu_buf: &'a mut [u8],
-    ) -> impl Future<Output = Result<usize, TxError>> + 'a {
+    ) -> impl Future<Output = Result<u8, TxError>> + 'a {
         self.ll_driver.transmit_with_retry(
             interface,
             plcp_parameters,
@@ -1141,13 +1152,6 @@ impl<'res> WiFi<'res> {
             Pin::new(self.tx_dma_descriptors.as_mut().unwrap().each_mut()[queue.hardware_slot()]),
             mpdu_buf,
         )
-    }
-    /// Get the current MAC time.
-    pub fn mac_time(&self) -> esp_hal::time::Instant {
-        // # Safety
-        // The LL driver will be alive for 'res, which is at least as long, as the existance of
-        // this struct.
-        unsafe { LowLevelDriver::mac_time() }
     }
     /// Check if that interface is valid.
     pub const fn validate_interface(interface: usize) -> Result<(), OutOfBounds> {

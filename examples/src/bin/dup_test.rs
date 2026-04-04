@@ -82,10 +82,11 @@ async fn main(_spawner: Spawner) {
             0,
             &TxPlcpParameters {
                 rate: if seq_num % 2 == 0 {
-                    WiFiRate::PhyRate1ML
+                    OfdmRate::Mbits6
                 } else {
-                    WiFiRate::PhyRate2ML
-                },
+                    OfdmRate::Mbits9
+                }
+                .into(),
                 ..Default::default()
             },
             &TxMacParameters {

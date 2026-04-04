@@ -32,7 +32,7 @@ impl HardwareTxResultSignal {
     /// Reset the slot state signal.
     pub fn reset(&self) {
         self.state
-            .store(Self::PENDING_OR_INACTIVE, Ordering::Relaxed);
+            .store(Self::PENDING_OR_INACTIVE, Ordering::Release);
     }
     /// Signal a slot state.
     pub fn signal(&self, slot_status: Result<(), ChannelAccessError>) {
@@ -47,21 +47,26 @@ impl HardwareTxResultSignal {
         self.waker.wake();
     }
     /// Wait for a slot state change.
-    pub fn wait(&self) -> impl Future<Output = Result<(), ChannelAccessError>> + use<'_> {
+    pub fn wait(
+        &self,
+    ) -> impl Future<Output = Result<(), ChannelAccessError>> + Send + Sync + use<'_> {
         poll_fn(|cx| {
-            let state = self.state.load(Ordering::Acquire);
-            if state != Self::PENDING_OR_INACTIVE {
-                self.reset();
-                Poll::Ready(match state {
-                    Self::SUCCESS => Ok(()),
-                    Self::TIMEOUT => Err(ChannelAccessError::Timeout),
-                    Self::COLLISION => Err(ChannelAccessError::Collision),
-                    _ => unreachable!(),
-                })
-            } else {
-                self.waker.register(cx.waker());
-                Poll::Pending
-            }
+            // We need a single core lock here, as the state may internally be updated by the ISR.
+            esp_sync::RawMutex::new().lock(|| {
+                let state = self.state.load(Ordering::Acquire);
+                if state != Self::PENDING_OR_INACTIVE {
+                    self.reset();
+                    Poll::Ready(match state {
+                        Self::SUCCESS => Ok(()),
+                        Self::TIMEOUT => Err(ChannelAccessError::Timeout),
+                        Self::COLLISION => Err(ChannelAccessError::Collision),
+                        _ => unreachable!(),
+                    })
+                } else {
+                    self.waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
         })
     }
 }
@@ -80,27 +85,30 @@ impl SignalQueue {
     }
     /// Increments the queue signals by one.
     pub fn put(&self) {
-        self.queued_signals.fetch_add(1, Ordering::Relaxed);
-        self.waker.wake();
+        if self.queued_signals.fetch_add(1, Ordering::AcqRel) == 0 {
+            // If there were already some signals queued up, there's no need to wake the task again.
+            self.waker.wake();
+        }
     }
     /// Reset the amount of signals in the queue back to zero.
     pub fn reset(&self) {
-        self.queued_signals.store(0, Ordering::Relaxed);
+        self.queued_signals.store(0, Ordering::Release);
     }
     /// Asynchronously wait for the next signal.
-    pub async fn next(&self) {
+    pub fn next(&self) -> impl Future<Output = ()> + Send + Sync + use<'_> {
         poll_fn(|cx| {
-            let queued_signals = self.queued_signals.load(Ordering::Relaxed);
-            if queued_signals == 0 {
-                self.waker.register(cx.waker());
-                Poll::Pending
-            } else {
-                self.queued_signals
-                    .store(queued_signals - 1, Ordering::Relaxed);
-                Poll::Ready(())
-            }
+            esp_sync::RawMutex::new().lock(|| {
+                let queued_signals = self.queued_signals.load(Ordering::Acquire);
+                if queued_signals == 0 {
+                    self.waker.register(cx.waker());
+                    Poll::Pending
+                } else {
+                    self.queued_signals
+                        .store(queued_signals - 1, Ordering::Release);
+                    Poll::Ready(())
+                }
+            })
         })
-        .await
     }
 }
 /// A drop guard, which executes the provided closure on drop.

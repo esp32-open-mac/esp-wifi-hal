@@ -194,12 +194,14 @@ impl DmaList {
             let (rx_next, rx_last) = (
                 self.ll_driver
                     .next_rx_descriptor()
-                    .map(|non_null| non_null.as_ptr() as u32),
+                    .map(|non_null| non_null.as_ptr() as u32)
+                    .unwrap_or_default(),
                 self.ll_driver
                     .last_rx_descriptor()
-                    .map(|non_null| non_null.as_ptr() as u32),
+                    .map(|non_null| non_null.as_ptr() as u32)
+                    .unwrap_or_default(),
             );
-            info!("DMA list: Next: {:x?} Last: {:x?}", rx_next, rx_last);
+            info!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
         }
     }
     /// Start receiving frames.

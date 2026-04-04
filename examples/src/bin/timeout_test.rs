@@ -37,7 +37,7 @@ async fn main(_spawner: Spawner) {
         .unwrap();
     loop {
         let res = wifi
-            .transmit_oneshot(
+            .transmit(
                 0,
                 &TxPlcpParameters::default(),
                 &TxMacParameters {
@@ -45,6 +45,7 @@ async fn main(_spawner: Spawner) {
                     override_seq_num: true,
                     ..Default::default()
                 },
+                TxErrorBehaviour::Drop,
                 HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice),
                 &mut buf[..written],
             )

@@ -2,7 +2,7 @@
 #![no_std]
 
 use esp_hal::{
-    peripherals::{Peripherals, ADC2, TIMG0, WIFI},
+    peripherals::{Peripherals, TIMG0, WIFI},
     timer::timg::TimerGroup,
 };
 use esp_wifi_hal::prelude::*;

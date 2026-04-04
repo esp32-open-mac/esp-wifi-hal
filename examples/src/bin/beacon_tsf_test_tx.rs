@@ -59,10 +59,7 @@ async fn main(_spawner: Spawner) {
             let written = buffer.pwrite(frame, 0).unwrap();
             wifi.transmit_oneshot(
                 0,
-                &TxPlcpParameters {
-                    rate: WiFiRate::PhyRate6M,
-                ..Default::default()
-                },
+                &TxPlcpParameters::default(),
                 &TxMacParameters {
                     override_seq_num: true,
                     ..Default::default()

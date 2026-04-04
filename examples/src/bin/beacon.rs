@@ -19,7 +19,7 @@ use ieee80211::{
     mac_parser::{MACAddress, BROADCAST},
     mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
     scroll::Pwrite,
-    ssid, supported_rates
+    ssid, supported_rates,
 };
 
 const SSID: &str = "The cake is a lie.";
@@ -78,7 +78,7 @@ async fn main(_spawner: Spawner) {
             .transmit_oneshot(
                 0,
                 &TxPlcpParameters {
-                    rate: WiFiRate::PhyRate1ML,
+                    rate: OfdmRate::Mbits6.into(),
                     ..Default::default()
                 },
                 &TxMacParameters {

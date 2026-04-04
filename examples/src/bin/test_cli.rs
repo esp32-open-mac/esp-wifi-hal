@@ -227,17 +227,20 @@ async fn beacon_command<'a>(
         beacon_template.elements.next.next.next.inner.dtim_count = i % 2;
         let written = buf.pwrite(beacon_template, 0).unwrap();
         wifi.transmit_oneshot(
-                0,
-                &TxPlcpParameters::default(),
-                &TxMacParameters {
-                    override_seq_num: true,
-                    ..Default::default()
-                },
-                HardwareTxQueue::Beacon,
-                &mut buf[..written],
-            )
-            .await
-            .unwrap();
+            1,
+            &TxPlcpParameters {
+                rate: TxPhyRate::Ht(HtRate::new(7, true, false).unwrap()),
+                ..Default::default()
+            },
+            &TxMacParameters {
+                override_seq_num: true,
+                ..Default::default()
+            },
+            HardwareTxQueue::Beacon,
+            &mut buf[..written],
+        )
+        .await
+        .unwrap();
         beacon_interval.next().await;
     }
 }
@@ -595,9 +598,9 @@ async fn main(_spawner: Spawner) {
     .with_tx(tx_pin)
     .into_async()
     .split();
+    let _ = writeln!(&mut uart0_tx, "READY");
 
     let _ = uart0_tx.flush_async().await;
-    let _ = writeln!(&mut uart0_tx, "READY");
     loop {
         let _ = write!(&mut uart0_tx, "> ");
         let mut buf = [0x00u8; 0xff];

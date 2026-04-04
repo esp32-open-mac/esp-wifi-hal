@@ -49,7 +49,13 @@ async fn main(_spawner: Spawner) {
     setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
 
     insert_key(&mut wifi, &GTK, KeyType::Group, AP_ADDRESS, GTK_KEY_SLOT);
-    insert_key(&mut wifi, &PTK, KeyType::Pairwise, STA_ADDRESS, PTK_KEY_SLOT);
+    insert_key(
+        &mut wifi,
+        &PTK,
+        KeyType::Pairwise,
+        STA_ADDRESS,
+        PTK_KEY_SLOT,
+    );
 
     for pn in 0.. {
         let (frame, key_slot) = if pn % 2 == 0 {
@@ -63,21 +69,17 @@ async fn main(_spawner: Spawner) {
         let _ = wifi
             .transmit_oneshot(
                 0,
-                &TxPlcpParameters {
-                    rate: WiFiRate::PhyRate6M,
-                    ..Default::default()
-                },
+                &TxPlcpParameters::default(),
                 &TxMacParameters {
                     wait_for_ack: true,
                     override_seq_num: true,
                     key_slot_index: Some(key_slot as u8),
                     ..Default::default()
                 },
-                HardwareTxQueue::DEFAULT_MANAGEMENT_QUEUE,
+                EdcaAccessCategory::DEFAULT_MANAGEMENT_QUEUE,
                 &mut buf[..len],
             )
             .await;
         Timer::after_secs(1).await;
     }
 }
-

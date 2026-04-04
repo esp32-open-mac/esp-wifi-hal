@@ -319,7 +319,7 @@ dependencies = [
  "embedded-io-async 0.6.1",
  "futures-sink",
  "futures-util",
- "heapless",
+ "heapless 0.8.0",
 ]
 
 [[package]]
@@ -333,7 +333,21 @@ dependencies = [
  "embedded-io-async 0.6.1",
  "futures-core",
  "futures-sink",
- "heapless",
+ "heapless 0.8.0",
+]
+
+[[package]]
+name = "embassy-sync"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bbd85cf5a5ae56bdf26f618364af642d1d0a4e245cdd75cd9aabda382f65a81"
+dependencies = [
+ "cfg-if",
+ "critical-section",
+ "embedded-io-async 0.7.0",
+ "futures-core",
+ "futures-sink",
+ "heapless 0.9.2",
 ]
 
 [[package]]
@@ -624,10 +638,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d44974639b4e88914f83fe60d2832c00276657d7d857628fdfc966cc7302e8a8"
 dependencies = [
  "cfg-if",
+ "defmt",
  "document-features",
  "embassy-sync 0.6.2",
  "embassy-sync 0.7.2",
  "esp-metadata-generated",
+ "log",
  "riscv",
  "xtensa-lx",
 ]
@@ -655,15 +671,17 @@ dependencies = [
  "defmt",
  "defmt-or-log",
  "embassy-futures",
- "embassy-sync 0.7.2",
+ "embassy-sync 0.8.0",
  "embassy-time",
  "esp-hal",
  "esp-phy",
+ "esp-sync",
  "esp-wifi-sys",
  "esp32",
  "esp32s2",
  "log",
  "macro-bits",
+ "num",
  "portable-atomic",
  "static_cell",
 ]
@@ -834,6 +852,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "heapless"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2af2455f757db2b292a9b1768c4b70186d443bcb3b316252d6b540aec1cd89ed"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -930,6 +958,58 @@ name = "nb"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
+
+[[package]]
+name = "num"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35bd024e8b2ff75562e5f34e7f4905839deb4b22955ef5e73d2fea1b9813cb23"
+dependencies = [
+ "num-complex",
+ "num-integer",
+ "num-iter",
+ "num-rational",
+ "num-traits",
+]
+
+[[package]]
+name = "num-complex"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73f88a1307638156682bada9d7604135552957b7818057dcef22705b4d509495"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-iter"
+version = "0.1.45"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1429034a0490724d0075ebb2bc9e875d6503c3cf69e235a8941aa757d83ef5bf"
+dependencies = [
+ "autocfg",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
 
 [[package]]
 name = "num-traits"
@@ -1333,7 +1413,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98816b1accafbb09085168b90f27e93d790b4bfa19d883466b5e53315b5f06a6"
 dependencies = [
- "heapless",
+ "heapless 0.8.0",
  "portable-atomic",
 ]
 

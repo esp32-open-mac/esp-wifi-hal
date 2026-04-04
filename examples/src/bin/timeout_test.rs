@@ -4,18 +4,10 @@ use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_wifi_hal::prelude::*;
-use examples::{common_init, embassy_init, wifi_init, AP_ADDRESS};
+use examples::{AP_ADDRESS, common_init, embassy_init, mk_static, wifi_init};
 use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::BROADCAST, scroll::Pwrite};
 use log::info;
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();

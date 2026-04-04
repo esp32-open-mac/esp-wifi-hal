@@ -8,21 +8,21 @@ extern "C" fn empty() {}
 
 #[cfg(osi_funcs_required)]
 #[allow(non_upper_case_globals)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 #[ram]
 static g_osi_funcs_p: &[extern "C" fn(); 0x6a] = &[empty; 0x6a];
 
 #[ram]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn esp_dport_access_reg_read(reg: u32) -> u32 {
-    (reg as *mut u32).read_volatile()
+    unsafe { (reg as *mut u32).read_volatile() }
 }
 
 #[cfg(target_arch = "xtensa")]
 #[ram]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn phy_enter_critical() -> u32 {
-    core::mem::transmute(critical_section::acquire())
+    unsafe { core::mem::transmute(critical_section::acquire()) }
 }
 
 /// **************************************************************************
@@ -40,15 +40,17 @@ unsafe extern "C" fn phy_enter_critical() -> u32 {
 /// *************************************************************************
 #[cfg(target_arch = "xtensa")]
 #[ram]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn phy_exit_critical(level: u32) {
-    critical_section::release(core::mem::transmute::<u32, critical_section::RestoreState>(
-        level,
-    ));
+    unsafe {
+        critical_section::release(core::mem::transmute::<u32, critical_section::RestoreState>(
+            level,
+        ))
+    };
 }
 
 #[ram]
-#[no_mangle]
+#[unsafe(no_mangle)]
 unsafe extern "C" fn rtc_get_xtal() -> u32 {
     use esp_hal::clock::Clock;
 
@@ -56,7 +58,7 @@ unsafe extern "C" fn rtc_get_xtal() -> u32 {
     xtal.mhz()
 }
 
-extern "C" {
+unsafe extern "C" {
     #[cfg(nomac_channel_set)]
     pub fn chip_v7_set_chan_nomac(channel: u8, bandwidth: u8);
     #[cfg(not(nomac_channel_set))]

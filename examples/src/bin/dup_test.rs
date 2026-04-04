@@ -7,28 +7,19 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_hal::efuse::Efuse;
 use esp_wifi_hal::prelude::*;
-use examples::{common_init, embassy_init, wifi_init};
+use examples::{common_init, embassy_init, mk_static, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
     element_chain,
     elements::{
-        tim::{StaticBitmap, TIMBitmap, TIMElement},
         DSSSParameterSetElement,
+        tim::{StaticBitmap, TIMBitmap, TIMElement},
     },
-    mac_parser::{MACAddress, BROADCAST},
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mac_parser::{BROADCAST, MACAddress},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
     ssid, supported_rates,
 };
-
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {

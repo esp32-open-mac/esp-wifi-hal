@@ -1,8 +1,8 @@
 [package]
 name = "esp-wifi-hal"
-version = "0.1.6"
+version = "0.2.0"
 authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 description = "An experimental driver for the Wi-Fi peripheral on ESP32-series chips."

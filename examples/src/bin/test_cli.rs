@@ -13,30 +13,31 @@ use alloc::{
 };
 use embassy_executor::Spawner;
 use embassy_futures::{
-    select::{select, Either},
+    select::{Either, select},
     yield_now,
 };
 use embassy_time::{Duration, Instant, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
+    Async,
     efuse::Efuse,
     uart::{Config, RxConfig, Uart, UartRx},
-    Async,
 };
 use esp_wifi_hal::{ll::LowLevelDriver, prelude::*};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
+    GenericFrame,
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
     element_chain,
     elements::{
-        tim::{StaticBitmap, TIMBitmap, TIMElement},
         DSSSParameterSetElement, SSIDElement,
+        tim::{StaticBitmap, TIMBitmap, TIMElement},
     },
-    mac_parser::{MACAddress, BROADCAST},
+    mac_parser::{BROADCAST, MACAddress},
     match_frames,
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
-    supported_rates, GenericFrame,
+    supported_rates,
 };
 extern crate alloc;
 use esp_alloc::{self as _, heap_allocator};
@@ -248,7 +249,7 @@ fn dump_command(wifi: &mut WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let _ = writeln!(uart0_tx, "Current channel: {}", wifi.get_channel());
     #[cfg(feature = "esp32")]
     {
-        extern "C" {
+        unsafe extern "C" {
             fn ram_phy_get_noisefloor() -> i32;
         }
         let nf_qdbm = unsafe { ram_phy_get_noisefloor() };

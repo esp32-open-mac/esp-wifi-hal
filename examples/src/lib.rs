@@ -84,3 +84,13 @@ pub fn wifi_init<'a>(wifi: WIFI<'a>) -> WiFi<'a> {
     static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();
     WiFi::new(wifi, WIFI_RESOURCES.init(WiFiResources::new()))
 }
+
+#[macro_export]
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.init_with(|| ($val));
+        x
+    }};
+}

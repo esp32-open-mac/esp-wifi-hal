@@ -2,7 +2,7 @@
 name = "examples"
 version = "0.1.0"
 authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
@@ -37,14 +37,14 @@ esp32 = [
     "esp-hal/esp32",
     "esp-rtos/esp32",
     "esp-backtrace/esp32",
-    "esp-bootloader-esp-idf/esp32"
+    "esp-bootloader-esp-idf/esp32",
 ]
 esp32s2 = [
     "esp-wifi-hal/esp32s2",
     "esp-hal/esp32s2",
     "esp-rtos/esp32s2",
     "esp-backtrace/esp32s2",
-    "esp-bootloader-esp-idf/esp32s2"
+    "esp-bootloader-esp-idf/esp32s2",
 ]
 
 [profile.dev]

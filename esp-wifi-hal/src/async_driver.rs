@@ -1,5 +1,5 @@
 use core::{cell::RefCell, future::Future, pin::Pin};
-use portable_atomic::{AtomicU16, AtomicU8, Ordering};
+use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::{
     async_driver::private::{AsyncTransmitExt, HasDmaList, NonExhaustive},
@@ -7,9 +7,9 @@ use crate::{
     crypto::CipherParameters,
     dma_list::DmaBufferSlab,
     ll::{
-        ChannelAccessError, HardwareTxQueue, HardwareTxQueueStatus, KeySlotParameters,
-        LowLevelDriver, MacProtocolError, RxFilterBank, WiFiInterrupt, INTERFACE_COUNT,
-        KEY_SLOT_COUNT,
+        ChannelAccessError, HardwareTxQueue, HardwareTxQueueStatus, INTERFACE_COUNT,
+        KEY_SLOT_COUNT, KeySlotParameters, LowLevelDriver, MacProtocolError, RxFilterBank,
+        WiFiInterrupt,
     },
     rates::TxPhyRate,
 };
@@ -18,9 +18,9 @@ use esp_hal::{dma::DmaDescriptor, handler, interrupt::CpuInterrupt, peripherals:
 use macro_bits::{bit, check_bit};
 
 use crate::{
+    DefaultRawMutex,
     dma_list::DmaList,
     sync::{HardwareTxResultSignal, SignalQueue},
-    DefaultRawMutex,
 };
 
 #[handler]
@@ -116,7 +116,7 @@ impl<const BUFFER_COUNT: usize> WiFiResources<BUFFER_COUNT> {
         &LowLevelDriver,
         &mut [DmaDescriptor; 5],
     ) {
-        let (base_ptr, last_ptr) = self.buffer_slab.init();
+        let (base_ptr, last_ptr) = unsafe { self.buffer_slab.init() };
         let ll_driver = self.ll_driver.insert(ll_driver);
         // # Safety
         // The DMA list is guaranteed to have the same lifetime as the LL driver, since they're
@@ -662,16 +662,16 @@ mod private {
     use macro_bits::bit;
 
     use crate::{
+        DefaultRawMutex,
         async_driver::{
-            HasLowLevelDriver, TxError, TxMacParameters, TxPlcpParameters, WiFi,
             CURRENT_SEQUENCE_NUMBER, FRAMES_SINCE_LAST_TXPWR_CTRL, HARDWARE_TX_RESULT_SIGNALS,
+            HasLowLevelDriver, TxError, TxMacParameters, TxPlcpParameters, WiFi,
         },
         dma_list::DmaList,
         ll::{HardwareTxQueue, LowLevelDriver},
         prelude::TxErrorBehaviour,
         rates::TxPhyRate,
         sync::DropGuard,
-        DefaultRawMutex,
     };
 
     #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -935,12 +935,10 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                 if let Some(current) = self
                     .dma_list_ref()
                     .lock(|dma_list| dma_list.borrow_mut().take_first())
-                {
-                    if current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+                    && current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
                         trace!("Received packet. len: {}", current.len());
                         break current;
                     }
-                }
                 trace!("Received empty packet.");
             };
 

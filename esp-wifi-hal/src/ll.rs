@@ -4,7 +4,7 @@
 use core::{
     iter::IntoIterator,
     pin::Pin,
-    ptr::{with_exposed_provenance_mut, NonNull},
+    ptr::{NonNull, with_exposed_provenance_mut},
 };
 
 use esp_hal::{
@@ -18,7 +18,7 @@ use macro_bits::{bit, check_bit};
 use portable_atomic::AtomicU64;
 
 use crate::{
-    esp_pac::{wifi::crypto_key_slot::KEY_VALUE, Interrupt as PacInterrupt, WIFI},
+    esp_pac::{Interrupt as PacInterrupt, WIFI, wifi::crypto_key_slot::KEY_VALUE},
     ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
     rates::TxPhyRate,
 };
@@ -1022,14 +1022,14 @@ impl LowLevelDriver {
         tx_result: Result<(), ChannelAccessError>,
         f: impl Fn(HardwareTxQueue),
     ) {
-        let raw_status = Self::raw_tx_status(tx_result);
+        let raw_status = unsafe { Self::raw_tx_status(tx_result) };
         (0..5)
             .filter(|i| check_bit!(raw_status, bit!(i)))
             .for_each(|queue| {
                 // For some reason the slot numbering needs to be reversed when working with the
                 // interrupt cause register.
                 (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
-                Self::clear_tx_slot_bit(tx_result, queue);
+                unsafe { Self::clear_tx_slot_bit(tx_result, queue) };
             });
     }
     #[inline]

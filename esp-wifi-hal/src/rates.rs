@@ -44,6 +44,29 @@ impl<D: RateDirection> From<HtRate<D>> for PhyRate<D> {
         Self::Ht(value)
     }
 }
+impl<D: RateDirection> Rate for PhyRate<D> {
+    fn bandwidth(&self) -> usize {
+        match self {
+            Self::HrDsss(rate) => rate.bandwidth(),
+            Self::Ofdm(rate) => rate.bandwidth(),
+            Self::Ht(rate) => rate.bandwidth(),
+        }
+    }
+    fn constellation(&self) -> Constellation {
+        match self {
+            Self::HrDsss(rate) => rate.constellation(),
+            Self::Ofdm(rate) => rate.constellation(),
+            Self::Ht(rate) => rate.constellation(),
+        }
+    }
+    fn data_rate(&self) -> Ratio<usize> {
+        match self {
+            Self::HrDsss(rate) => rate.data_rate(),
+            Self::Ofdm(rate) => rate.data_rate(),
+            Self::Ht(rate) => rate.data_rate(),
+        }
+    }
+}
 
 /// A Wi-Fi PHY rate for transmission.
 pub type TxPhyRate = PhyRate<Tx>;
@@ -218,9 +241,10 @@ pub enum OfdmRate {
     Mbits48 = 0x08,
     Mbits54 = 0x0c,
 }
+impl OfdmRate {}
 impl Rate for OfdmRate {
     fn constellation(&self) -> Constellation {
-        match (*self as usize) / 2 {
+        match 3 - ((*self as usize - 8) & 0b11) {
             0 => Constellation::Bpsk,
             1 => Constellation::Qpsk,
             2 => Constellation::Qam16,
@@ -248,10 +272,10 @@ impl OfdmBasedRate for OfdmRate {
     fn coding_rate(&self) -> Ratio<usize> {
         if *self == Self::Mbits48 {
             Ratio::new(2, 3)
-        } else if (*self as usize).is_multiple_of(4) {
-            Ratio::new(1, 2)
-        } else {
+        } else if (*self as usize - 8) & 0b100 != 0 {
             Ratio::new(3, 4)
+        } else {
+            Ratio::new(1, 2)
         }
     }
     fn guard_interval_duration(&self) -> usize {
@@ -407,11 +431,7 @@ impl<D: RateDirection> OfdmBasedRate for HtRate<D> {
         }
     }
     fn pilot_subcarriers(&self) -> usize {
-        if self.cbw40 {
-            6
-        } else {
-            4
-        }
+        if self.cbw40 { 6 } else { 4 }
     }
     fn total_subcarriers(&self) -> usize {
         if self.cbw40 && self.mcs_index != 32 {
@@ -436,10 +456,6 @@ impl<D: RateDirection> OfdmBasedRate for HtRate<D> {
         Ratio::new(numer, denom)
     }
     fn guard_interval_duration(&self) -> usize {
-        if self.short_gi {
-            400
-        } else {
-            800
-        }
+        if self.short_gi { 400 } else { 800 }
     }
 }

@@ -316,22 +316,34 @@ fn filter_command<'a>(
             };
             let _ = wifi.set_filter(interface, bank, *mac_address);
         }
+        Some("clear") => {
+            let _ = wifi.clear_filter(interface, bank);
+        }
         None => {
-            let _ = writeln!(
-                uart0_tx,
-                "Missing operand, valid operands are: set,enable,disable"
-            );
+            let _ = writeln!(uart0_tx, "Missing operand, valid operands are: set,clear");
         }
         Some(operand) => {
             let _ = writeln!(
                 uart0_tx,
-                "Invalid operand {operand}, valid operands are: set,enable,disable"
+                "Invalid operand {operand}, valid operands are: set,clear"
             );
         }
     }
 }
-async fn sniff_command(wifi: &mut WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) {
+async fn sniff_command(
+    wifi: &mut WiFi<'_>,
+    uart0_tx: &mut impl embedded_io::Write,
+    mut args: impl Iterator<Item = &str> + '_,
+) {
     wifi.clear_rx_queue();
+    if args.next() == Some("all") {
+        unsafe {
+            wifi.ll_driver_ref()
+                .set_filtered_address_types(3, false, false);
+            wifi.ll_driver_ref()
+                .set_control_frame_filter(3, &ControlFrameFilterConfig::all());
+        }
+    }
     loop {
         let received = wifi.receive().await;
         let mut interfaces = [0; 4];
@@ -353,21 +365,21 @@ async fn sniff_command(wifi: &mut WiFi<'_>, uart0_tx: &mut impl embedded_io::Wri
         }
         let _ = write!(
             uart0_tx,
-            "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Address 1: {}",
+            "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Mbit/s Address 1: {}",
             generic_frame.frame_control_field().frame_type(),
             received.rssi(),
             received.rx_state(),
             &interfaces[..if_count],
-            received.phy_rate(),
+            received.phy_rate().unwrap().data_rate().to_integer() / 1_000_000,
             generic_frame.address_1()
         );
         if let Some(address_2) = generic_frame.address_2() {
             let _ = write!(uart0_tx, " Address 2: {address_2}");
-        } else {
-            let _ = writeln!(uart0_tx,);
-        }
-        if let Some(address_3) = generic_frame.address_3() {
-            let _ = writeln!(uart0_tx, " Address 3: {address_3}");
+            if let Some(address_3) = generic_frame.address_3() {
+                let _ = writeln!(uart0_tx, " Address 3: {address_3}");
+            } else {
+                let _ = writeln!(uart0_tx,);
+            }
         } else {
             let _ = writeln!(uart0_tx,);
         }
@@ -483,6 +495,10 @@ fn m_mod<'a>(uart0_tx: &mut impl embedded_io::Write, mut args: impl Iterator<Ite
             let _ = writeln!(uart0_tx, "Invalid address.");
             return;
         };
+        if !address.is_multiple_of(4) {
+            let _ = writeln!(uart0_tx, "Unaligned load.");
+            return;
+        }
         address as *mut u32
     };
     let previous = unsafe { address.read_volatile() };
@@ -535,8 +551,8 @@ async fn run_command<'a>(
                 scan [all|beacons] [hop] - Look for available access points.\n\
                 beacon [SSID] <CHANNEL_NUMBER> - Transmit a beacon every 100 TUs.\n\
                 dump - Dump status information.\n\
-                filter [BSSID|RA] [0|1] [set|enable|disable] <FILTER_ADDRESS> - Set filter status.\n\
-                sniff - Logs frames with rough info.\n\
+                filter [BSSID|RA] [0-3] [set|clear] <FILTER_ADDRESS> - Set filter status.\n\
+                sniff [all] - Logs frames with rough info.\n\
                 scanning_mode INTERFACE [management_and_data|beacons_only|disabled] - Set the scanning mode.\n\
                 s_pol INTERFACE REGISTER_VALUE - Set the RX policy register for the given interface. \n\
                 m_mod [r|w|&|||x] ADDRESS_OR_OFFSET <VALUE> - Modify raw memory. If you prefix the address with an `r`, it will be treated as an offset relative to the Wi-Fi peripheral base.
@@ -558,7 +574,7 @@ async fn run_command<'a>(
         "filter" => {
             filter_command(wifi, uart0_tx, args);
         }
-        "sniff" => sniff_command(wifi, uart0_tx).await,
+        "sniff" => sniff_command(wifi, uart0_tx, args).await,
         "scanning_mode" => scanning_mode_command(wifi, uart0_tx, args),
         "s_pol" => s_pol_command(wifi, uart0_tx, args).await,
         "m_mod" => m_mod(uart0_tx, args),

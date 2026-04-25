@@ -40,11 +40,18 @@ async fn main(_spawner: Spawner) {
         .unwrap();
     loop {
         let res = wifi
-            .transmit_oneshot(
+            .transmit(
                 0,
-                &TxPlcpParameters::default(),
-                &TxMacParameters::default(),
-                EdcaAccessCategory::DEFAULT_MANAGEMENT_QUEUE,
+                &TxPlcpParameters {
+                    rate: HrDsssRate::new(2, false).unwrap().into(),
+                    ..Default::default()
+                },
+                &TxMacParameters {
+                    wait_for_ack: true,
+                    ..Default::default()
+                },
+                TxErrorBehaviour::RetryUntil(7),
+                EdcaAccessCategory::Video.into(),
                 &mut buf[..written],
             )
             .await;

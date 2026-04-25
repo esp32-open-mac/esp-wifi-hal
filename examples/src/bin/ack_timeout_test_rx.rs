@@ -4,13 +4,9 @@
 #![no_main]
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_wifi_hal::{ll::LowLevelDriver, prelude::*};
-use examples::{common_init, embassy_init, get_test_channel, wifi_init};
-use ieee80211::{mac_parser::MACAddress, GenericFrame};
-use log::info;
+use esp_wifi_hal::prelude::*;
+use examples::{AP_ADDRESS, STA_ADDRESS, common_init, embassy_init, get_test_channel, wifi_init};
 
-const OTHER_MAC_ADDRESS: MACAddress = MACAddress::new([0x00, 0x80, 0x41, 0x13, 0x37, 0x42]);
-const OWN_MAC_ADDRESS: MACAddress = MACAddress::new([0x00, 0x80, 0x41, 0x13, 0x37, 0x41]);
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
@@ -18,38 +14,9 @@ async fn main(_spawner: Spawner) {
     let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());
-    unsafe {
-        LowLevelDriver::regs()
-            .rx_ctrl_filter(0)
-            .write(|w| w.bits(0));
-    }
+    let _ = wifi.set_filter(0, RxFilterBank::ReceiverAddress, STA_ADDRESS);
+    let _ = wifi.set_filter(0, RxFilterBank::Bssid, AP_ADDRESS);
     loop {
-        let received = wifi.receive().await;
-        let Ok(generic_frame) = GenericFrame::new(received.mpdu_buffer(), false) else {
-            continue;
-        };
-        if generic_frame.address_1() == OWN_MAC_ADDRESS {
-            let _ = wifi
-                .transmit_oneshot(
-                    0,
-                    &TxPlcpParameters::default(),
-                    &TxMacParameters::default(),
-                    EdcaAccessCategory::DEFAULT_MANAGEMENT_QUEUE,
-                    &mut [
-                        0xd4,
-                        0x00,
-                        0x00,
-                        0x00,
-                        OTHER_MAC_ADDRESS[0],
-                        OTHER_MAC_ADDRESS[1],
-                        OTHER_MAC_ADDRESS[2],
-                        OTHER_MAC_ADDRESS[3],
-                        OTHER_MAC_ADDRESS[4],
-                        OTHER_MAC_ADDRESS[5],
-                    ],
-                )
-                .await;
-            info!("Transmitted software ACK.");
-        }
+        let _ = wifi.receive().await;
     }
 }

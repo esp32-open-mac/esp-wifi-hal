@@ -7,9 +7,9 @@ use crate::{
     crypto::CipherParameters,
     dma_list::DmaBufferSlab,
     ll::{
-        ChannelAccessError, HardwareTxQueue, HardwareTxQueueStatus, INTERFACE_COUNT,
-        KEY_SLOT_COUNT, KeySlotParameters, LowLevelDriver, MacProtocolError, RxFilterBank,
-        WiFiInterrupt,
+        ChannelAccessError, ControlFrameFilterConfig, HardwareTxQueue, HardwareTxQueueStatus,
+        INTERFACE_COUNT, KEY_SLOT_COUNT, KeySlotParameters, LowLevelDriver, MacProtocolError,
+        RxFilterBank, WiFiInterrupt,
     },
     rates::TxPhyRate,
 };
@@ -442,6 +442,19 @@ impl RxInterfaceController<'_> {
             scanning_mode == ScanningMode::BeaconsOnly,
             scanning_mode == ScanningMode::ManagementAndData,
         );
+    }
+    /// Set the type of addresses that should be filtered.
+    ///
+    /// If an address type is unfiltered, frames with RAs matching that address type will pass the
+    /// filter unconditionally. Otherwise the frame will be filtered as usual.
+    pub fn set_filtered_address_types(&self, unicast: bool, multicast: bool) {
+        self.ll_driver
+            .set_filtered_address_types(self.interface, unicast, multicast);
+    }
+    /// Configure which control frames pass the filter.
+    pub fn set_control_frame_filter(&self, config: &ControlFrameFilterConfig) {
+        self.ll_driver
+            .set_control_frame_filter(self.interface, config);
     }
     /// Get the index of the RX interface, this is associated with.
     pub const fn interface(&self) -> usize {
@@ -935,7 +948,8 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                 if let Some(current) = self
                     .dma_list_ref()
                     .lock(|dma_list| dma_list.borrow_mut().take_first())
-                    && current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+                    && current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH
+{
                         trace!("Received packet. len: {}", current.len());
                         break current;
                     }
@@ -1228,6 +1242,31 @@ impl<'res> WiFi<'res> {
                 scanning_mode == ScanningMode::BeaconsOnly,
                 scanning_mode == ScanningMode::ManagementAndData,
             );
+        })
+    }
+/// Set the type of addresses that should be filtered.
+    ///
+    /// If an address type is unfiltered, frames with RAs matching that address type will pass the
+    /// filter unconditionally. Otherwise the frame will be filtered as usual.
+    pub fn set_filtered_address_types(
+        &self,
+        interface: usize,
+        unicast: bool,
+        multicast: bool,
+    ) -> Result<(), OutOfBounds> {
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver
+                .set_filtered_address_types(interface, unicast, multicast);
+        })
+    }
+    /// Configure which control frames pass the filter.
+    pub fn set_control_frame_filter(
+        &self,
+        interface: usize,
+        config: &ControlFrameFilterConfig,
+    ) -> Result<(), OutOfBounds> {
+        Self::validate_interface(interface).inspect(|_| {
+            self.ll_driver.set_control_frame_filter(interface, config);
         })
     }
     /// Check if they key slot is valid.

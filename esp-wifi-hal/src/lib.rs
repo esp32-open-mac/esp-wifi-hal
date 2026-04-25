@@ -88,7 +88,7 @@ pub mod prelude {
     pub use crate::crypto::*;
     pub use crate::ll::{
         ChannelAccessError, ControlFrameFilterConfig, EdcaAccessCategory, HardwareTxQueue,
-        MacProtocolError, RxFilterBank, INTERFACE_COUNT, KEY_SLOT_COUNT,
+        INTERFACE_COUNT, KEY_SLOT_COUNT, MacProtocolError, RxFilterBank,
     };
     pub use crate::rates::*;
     pub use crate::sync::DropGuard;

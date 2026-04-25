@@ -6,11 +6,11 @@ use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 use macro_bits::{bit, check_bit};
 
 use crate::{
+    DefaultRawMutex,
     async_driver::WiFi,
     dma_list::DmaList,
-    ll::{LowLevelDriver, INTERFACE_COUNT},
+    ll::{INTERFACE_COUNT, LowLevelDriver},
     rates::{HrDsssRate, HtRate, OfdmRate, RxPhyRate},
-    DefaultRawMutex,
 };
 
 /// A buffer borrowed from the DMA list.

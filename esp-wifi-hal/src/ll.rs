@@ -3,6 +3,7 @@
 //! All functions in this module are unsafe, since their effect may be very context dependent.
 use core::{
     iter::IntoIterator,
+    ops::RangeInclusive,
     pin::Pin,
     ptr::{NonNull, with_exposed_provenance_mut},
 };
@@ -15,7 +16,6 @@ use esp_hal::{
 };
 use esp_phy::{PhyController, PhyInitGuard};
 use macro_bits::{bit, check_bit};
-use portable_atomic::AtomicU64;
 
 use crate::{
     esp_pac::{Interrupt as PacInterrupt, WIFI, wifi::crypto_key_slot::KEY_VALUE},
@@ -351,6 +351,20 @@ impl EdcaAccessCategory {
     /// The default queue used for management frames.
     pub const DEFAULT_MANAGEMENT_QUEUE: HardwareTxQueue =
         HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice);
+
+    #[inline]
+    /// Get the default contention window exponent range.
+    ///
+    /// See 9-194 in IEEE 802.11-2024, which applies to us, as we're probably not a
+    /// sensor STA and don't do OCB.
+    pub const fn default_cw_exponent_range(&self) -> RangeInclusive<u8> {
+        match self {
+            EdcaAccessCategory::Background => 4..=10,
+            EdcaAccessCategory::BestEffort => 4..=10,
+            EdcaAccessCategory::Video => 3..=10,
+            EdcaAccessCategory::Voice => 2..=10,
+        }
+    }
     #[inline]
     /// Get the IEEE 802.11 Access Category Index (ACI).
     pub const fn access_category_index(&self) -> usize {
@@ -420,6 +434,23 @@ pub enum HardwareTxQueue {
 }
 impl HardwareTxQueue {
     #[inline]
+    /// Get the default AIFSN for the TX queue.
+    ///
+    /// See 9-194 in IEEE 802.11-2024, which applies to us, as we're probably not a
+    /// sensor STA and don't do OCB. The AIFSN for the beacon queue is taken from esp-wifi.
+    pub const fn default_aifsn(&self) -> u8 {
+        if let Self::Edcaf(edca_ac) = self {
+            match *edca_ac {
+                EdcaAccessCategory::Background => 7,
+                EdcaAccessCategory::BestEffort => 3,
+                EdcaAccessCategory::Video => 2,
+                EdcaAccessCategory::Voice => 2,
+            }
+        } else {
+            1
+        }
+    }
+    #[inline]
     /// Get the hardware slot number.
     ///
     /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
@@ -456,6 +487,11 @@ impl HardwareTxQueue {
         matches!(self, Self::Edcaf(_))
     }
 }
+impl From<EdcaAccessCategory> for HardwareTxQueue {
+    fn from(value: EdcaAccessCategory) -> Self {
+        Self::Edcaf(value)
+    }
+}
 
 #[cfg(any(feature = "esp32", feature = "esp32s2"))]
 /// The number of "interfaces" supported by the hardware.
@@ -465,7 +501,7 @@ pub const INTERFACE_COUNT: usize = 4;
 pub const KEY_SLOT_COUNT: usize = 25;
 
 #[cfg(feature = "esp32")]
-static MAC_TIME_OFFSET: AtomicU64 = AtomicU64::new(0);
+static MAC_TIME_OFFSET: portable_atomic::AtomicU64 = portable_atomic::AtomicU64::new(0);
 
 /// Low level driver for the Wi-Fi peripheral.
 ///
@@ -692,8 +728,12 @@ impl LowLevelDriver {
     /// # Safety
     /// This is expected to be called ONLY from the MAC interrupt handler.
     pub unsafe fn get_and_clear_pwr_interrupt_cause() -> PwrInterruptCause {
-        let cause = Self::regs().pwr_interrupt().pwr_int_status().read().bits();
-        Self::regs()
+        let cause = Self::regs_internal()
+            .pwr_interrupt()
+            .pwr_int_status()
+            .read()
+            .bits();
+        Self::regs_internal()
             .pwr_interrupt()
             .pwr_int_clear()
             .write(|w| unsafe { w.bits(cause) });
@@ -1127,6 +1167,7 @@ impl LowLevelDriver {
         backoff_slots: usize,
         aifsn: usize,
     ) {
+        trace!("AIFSN: {} Backoff Slots: {}", aifsn, backoff_slots);
         Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .config()
@@ -1159,6 +1200,10 @@ impl LowLevelDriver {
                     .wait_for_ack()
                     .bit(wait_for_ack)
             });
+        Self::regs_internal()
+            .tx_slot_config(queue.hardware_slot())
+            .plcp0()
+            .modify(|r, w| unsafe { w.bits(r.bits() | 0x1800_0000) });
     }
     #[inline]
     /// Configure the PLCP1 register for a TX queue.

@@ -1,4 +1,4 @@
-use core::{cell::RefCell, future::Future, pin::Pin};
+use core::{cell::RefCell, future::Future, ops::RangeInclusive, pin::Pin};
 use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::{
@@ -542,7 +542,18 @@ pub struct TxPlcpParameters {
     pub _ne: NonExhaustive,
 }
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// Parameters to override Enhance Distributed Channel Access (EDCA) defaults.
+pub struct OverrideEdcaParameters {
+    /// Range of allowed contention window exponents.
+    ///
+    /// The default is `4..=10`, which is equal to a minimum CW of 15 and a maximum of 1023.
+    pub contention_window_exponent_range: Option<RangeInclusive<u8>>,
+    /// Override the queue default AIFSN.
+    pub aifsn: Option<u8>,
+}
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Parameters for the MAC.
 ///
 /// These parameters control the MAC peripherals handling of the frame, like wait-for-ACK, frame
@@ -563,6 +574,8 @@ pub struct TxMacParameters {
     ///
     /// NOTE: This will change the buffer!
     pub override_seq_num: bool,
+    /// Parameters for Enhance Distributed Channel Access (EDCA).
+    pub override_edca_parameters: OverrideEdcaParameters,
     /// Requires using `..Default::default()` initialization, to ensure future backwards
     /// compatibility.
     pub _ne: NonExhaustive,
@@ -662,6 +675,10 @@ pub enum TxError {
     DisabledKeySlot,
     /// The provided interface or key slot is out of bounds.
     OutOfBounds,
+    /// The provided EDCA parameters were invalid.
+    ///
+    /// Currently this only happens, if [EdcaParameters::contention_window_exponent_range] is empty.
+    InvalidEdcaParameters,
 }
 /// The current sequence number tracked by the driver.
 static CURRENT_SEQUENCE_NUMBER: AtomicU16 = AtomicU16::new(0);
@@ -681,7 +698,8 @@ mod private {
             HasLowLevelDriver, TxError, TxMacParameters, TxPlcpParameters, WiFi,
         },
         dma_list::DmaList,
-        ll::{HardwareTxQueue, LowLevelDriver},
+        edca::EdcaContentionState,
+        ll::{HardwareTxQueue, LowLevelDriver, MacProtocolError},
         prelude::TxErrorBehaviour,
         rates::TxPhyRate,
         sync::DropGuard,
@@ -708,6 +726,8 @@ mod private {
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
             duration: u16,
+            backoff_slots: usize,
+            aifsn: usize,
         ) {
             // To setup a frame for transmission, we have to do a few things with the hardware.
             // 1. Configure channel access parameters, like the medium access timeout (unsure), as
@@ -719,7 +739,7 @@ mod private {
             //    HE and VHT.)
             let ll_driver = unsafe { self.ll_driver_ref() };
 
-            ll_driver.set_channel_access_parameters(queue, 10, 2, 2);
+            ll_driver.set_channel_access_parameters(queue, 10, backoff_slots, aifsn);
             ll_driver.set_plcp0(queue, dma_descriptor, mac_parameters.wait_for_ack);
             ll_driver.set_plcp1(
                 queue,
@@ -750,7 +770,8 @@ mod private {
             mac_parameters: &'a TxMacParameters,
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
-            duration: Result<u16, TxError>,
+            duration_and_backoff_slots: Result<(u16, u16), TxError>,
+            aifsn: usize,
         ) -> impl Future<Output = Result<(), TxError>> + Send + Sync + 'a {
             let ll_driver = unsafe { self.ll_driver_ref() };
             let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
@@ -763,7 +784,7 @@ mod private {
             });
             // If any error was forwarded through the duration, we don't do anything here and
             // return an error on the first poll.
-            if let Ok(duration) = duration {
+            if let Ok((duration, backoff_slots)) = duration_and_backoff_slots {
                 // Setup the frame for transmission. We'll start TX a little later.
                 self.setup_tx(
                     interface,
@@ -772,6 +793,8 @@ mod private {
                     queue,
                     dma_descriptor.as_ref(),
                     duration,
+                    backoff_slots as usize,
+                    aifsn,
                 );
 
                 // This compensates for other slots being marked as done, without it being used at all.
@@ -785,7 +808,7 @@ mod private {
             // Note that self isn't used anywhere in this block, thus allowing the future to be
             // Send + Sync.
             async move {
-                duration?;
+                duration_and_backoff_slots?;
                 // We wait for the transmission to complete here.
                 HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
                     .wait()
@@ -860,13 +883,34 @@ mod private {
             let duration = self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf);
             Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
 
+            let backoff_slots = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
+                EdcaContentionState::new(
+                    mac_parameters
+                        .override_edca_parameters
+                        .contention_window_exponent_range
+                        .clone()
+                        .unwrap_or(edca_ac.default_cw_exponent_range()),
+                )
+                .map(|contention_state| contention_state.random_backoff_slot_count())
+            } else {
+                Some(1)
+            };
+            let duration_and_backoff_slots = backoff_slots
+                .ok_or(TxError::InvalidEdcaParameters)
+                .map(|backoff_slots| duration.map(|duration| (duration, backoff_slots as u16)))
+                .flatten();
+
             self.transmit_raw(
                 interface,
                 plcp_parameters.rate,
                 mac_parameters,
                 queue,
                 dma_descriptor.into_ref(),
-                duration,
+                duration_and_backoff_slots,
+                mac_parameters
+                    .override_edca_parameters
+                    .aifsn
+                    .unwrap_or(queue.default_aifsn()) as usize,
             )
         }
         #[allow(clippy::too_many_arguments)]
@@ -891,10 +935,26 @@ mod private {
             // succeeds, we return.
             let mut last_res = Ok::<u8, TxError>(0);
 
+            let mut edca_contention_state = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
+                EdcaContentionState::new(
+                    mac_parameters
+                        .override_edca_parameters
+                        .contention_window_exponent_range
+                        .clone()
+                        .unwrap_or(edca_ac.default_cw_exponent_range()),
+                )
+            } else {
+                None
+            };
+
             for (i, tx_attempt_rate) in error_behaviour
                 .tx_attempt_rate_iter(plcp_parameters.rate)
                 .enumerate()
             {
+                let backoff_slots = edca_contention_state
+                    .as_ref()
+                    .map(EdcaContentionState::random_backoff_slot_count)
+                    .unwrap_or(1) as u16;
                 // The transmission will already be started, before the first poll, which ensures
                 // that TX happens almost in real time.
                 last_res = self
@@ -904,14 +964,30 @@ mod private {
                         mac_parameters,
                         queue,
                         dma_descriptor.as_ref(),
-                        Ok(duration),
+                        Ok((duration, backoff_slots)),
+                        mac_parameters
+                            .override_edca_parameters
+                            .aifsn
+                            .unwrap_or(queue.default_aifsn()) as usize,
                     )
                     .await
                     .map(|_| i as u8);
-                if let Err(err) = last_res {
-                    trace!("Retransmitting MPDU due to: {:?}", err);
-                } else {
-                    break;
+                match last_res {
+                    Ok(_) => break,
+                    Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => {
+                        edca_contention_state.as_mut().map(|contention_state| {
+                            trace!("Incremented LRC");
+                            contention_state.increment_lrc();
+                            contention_state.reset_src();
+                        });
+                    }
+                    Err(TxError::MacProtocol(_)) => {
+                        edca_contention_state.as_mut().map(|contention_state| {
+                            trace!("Incremented SRC");
+                            contention_state.increment_src();
+                        });
+                    }
+                    _ => {}
                 }
             }
             if let Some(byte) = mpdu_buf.get_mut(1) {
@@ -949,10 +1025,10 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                     .dma_list_ref()
                     .lock(|dma_list| dma_list.borrow_mut().take_first())
                     && current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH
-{
-                        trace!("Received packet. len: {}", current.len());
-                        break current;
-                    }
+                {
+                    trace!("Received packet. len: {}", current.len());
+                    break current;
+                }
                 trace!("Received empty packet.");
             };
 
@@ -1244,7 +1320,7 @@ impl<'res> WiFi<'res> {
             );
         })
     }
-/// Set the type of addresses that should be filtered.
+    /// Set the type of addresses that should be filtered.
     ///
     /// If an address type is unfiltered, frames with RAs matching that address type will pass the
     /// filter unconditionally. Otherwise the frame will be filtered as usual.

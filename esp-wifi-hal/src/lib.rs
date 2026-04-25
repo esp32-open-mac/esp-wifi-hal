@@ -71,6 +71,8 @@ pub mod ll;
 pub mod rates;
 mod sync;
 
+mod edca;
+
 #[cfg(feature = "esp32")]
 use esp32 as esp_pac;
 #[cfg(feature = "esp32s2")]

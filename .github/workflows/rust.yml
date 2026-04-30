@@ -1,0 +1,34 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  esp-wifi-hal:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: esp-wifi-hal
+    steps:
+    - uses: esp-rs/xtensa-toolchain@v1.6
+    - name: Build
+      run: |
+        cargo build --features esp32 --target xtensa-esp32-none-elf
+        cargo build --features esp32s2 --target xtensa-esp32s2-none-elf
+  examples:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples
+    steps:
+    - uses: esp-rs/xtensa-toolchain@v1.6
+    - name: Build
+      run: |
+        cargo build --features esp32 --target xtensa-esp32-none-elf
+        cargo build --features esp32s2 --target xtensa-esp32s2-none-elf

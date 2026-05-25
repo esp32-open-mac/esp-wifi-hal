@@ -1,10 +1,9 @@
 // These implementations are taken from esp-wifi.
 
-use esp_hal::{clock::RtcClock, ram};
-
 #[cfg(osi_funcs_required)]
 #[ram]
 extern "C" fn empty() {}
+use esp_hal::{clock::xtal_clock, ram};
 
 #[cfg(osi_funcs_required)]
 #[allow(non_upper_case_globals)]
@@ -52,10 +51,7 @@ unsafe extern "C" fn phy_exit_critical(level: u32) {
 #[ram]
 #[unsafe(no_mangle)]
 unsafe extern "C" fn rtc_get_xtal() -> u32 {
-    use esp_hal::clock::Clock;
-
-    let xtal = RtcClock::xtal_freq();
-    xtal.mhz()
+    xtal_clock().as_mhz()
 }
 
 unsafe extern "C" {

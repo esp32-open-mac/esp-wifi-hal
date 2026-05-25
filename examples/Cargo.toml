@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 esp-wifi-hal = { path = "../esp-wifi-hal/", features = ["log"] }
 
 # ESP-HAL dependencies
-esp-hal = { version = "1.0.0", features = ["unstable"] }
+esp-hal = { version = "1.1.0", features = ["unstable"] }
 esp-alloc = "0.9.0"
 esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
 
@@ -22,14 +22,14 @@ static_cell = { version = "2.1.1" }
 ieee80211 = { path = "../../../rust/ieee80211/" }
 embedded-io-async = "0.7.0"
 embassy-futures = "0.1.2"
-embassy-executor = "0.9.1"
-embassy-time = "0.5.0"
-embassy-sync = "0.7.2"
+embassy-executor = "0.10.0"
+embassy-time = "0.5.1"
+embassy-sync = "0.8.0"
 rand_core = "0.9.3"
 embedded-io = "0.7.1"
-esp-rtos = { version = "0.2.0", features = ["embassy"] }
+esp-rtos = { version = "0.3.0", features = ["embassy"] }
 esp-println = { version = "0.16.1", features = ["log-04"] }
-esp-bootloader-esp-idf = "0.4.0"
+esp-bootloader-esp-idf = "0.5.0"
 
 [features]
 esp32 = [

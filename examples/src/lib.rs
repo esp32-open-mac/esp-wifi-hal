@@ -2,7 +2,8 @@
 #![no_std]
 
 use esp_hal::{
-    peripherals::{Peripherals, TIMG0, WIFI},
+    interrupt::software::SoftwareInterruptControl,
+    peripherals::{Peripherals, SW_INTERRUPT, TIMG0, WIFI},
     timer::timg::TimerGroup,
 };
 use esp_wifi_hal::prelude::*;
@@ -76,9 +77,10 @@ pub fn common_init() -> Peripherals {
 
     peripherals
 }
-pub fn embassy_init(timg0: TIMG0<'static>) {
+pub fn embassy_init(timg0: TIMG0<'static>, sw_interrupt: SW_INTERRUPT<'static>) {
     let timg0 = TimerGroup::<'static>::new(timg0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt_control = SoftwareInterruptControl::new(sw_interrupt);
+    esp_rtos::start(timg0.timer0, sw_interrupt_control.software_interrupt0);
 }
 pub fn wifi_init<'a>(wifi: WIFI<'a>) -> WiFi<'a> {
     static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();

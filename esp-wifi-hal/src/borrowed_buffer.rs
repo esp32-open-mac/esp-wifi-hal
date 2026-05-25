@@ -1,8 +1,8 @@
 use core::cell::RefCell;
 
+use crate::esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 use embassy_sync::blocking_mutex;
 use esp_hal::dma::DmaDescriptor;
-use esp_wifi_sys::include::wifi_pkt_rx_ctrl_t;
 use macro_bits::{bit, check_bit};
 
 use crate::{

@@ -19,7 +19,7 @@ use log::info;
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0);
-    let mut wifi = wifi_init(peripherals.WIFI);
+    let mut wifi = wifi_init(peripherals.WIFI, peripherals.SW_INTERRUPT);
 
     let _ = wifi.set_channel(get_test_channel());
     setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);

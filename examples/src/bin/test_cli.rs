@@ -20,7 +20,7 @@ use embassy_time::{Duration, Instant, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
     Async,
-    efuse::Efuse,
+    efuse::base_mac_address,
     uart::{Config, RxConfig, Uart, UartRx},
 };
 use esp_wifi_hal::{ll::LowLevelDriver, prelude::*};
@@ -183,7 +183,7 @@ async fn beacon_command<'a>(
         uart0_tx,
         "Transmitting beacons with SSID: {ssid} on channel {channel_number}."
     );
-    let mac_address = MACAddress::new(Efuse::read_base_mac_address());
+    let mac_address = MACAddress::new(base_mac_address().as_bytes().try_into().unwrap());
     let mut beacon_template = BeaconFrame {
         header: ManagementFrameHeader {
             bssid: mac_address,
@@ -363,6 +363,9 @@ async fn sniff_command(
         {
             // continue;
         }
+        let Some(phy_rate) = received.phy_rate() else {
+            continue;
+        };
         let _ = write!(
             uart0_tx,
             "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Mbit/s Address 1: {}",
@@ -370,7 +373,7 @@ async fn sniff_command(
             received.rssi(),
             received.rx_state(),
             &interfaces[..if_count],
-            received.phy_rate().unwrap().data_rate().to_integer() / 1_000_000,
+            phy_rate.data_rate().to_integer() / 1_000_000,
             generic_frame.address_1()
         );
         if let Some(address_2) = generic_frame.address_2() {
@@ -598,7 +601,7 @@ async fn main(_spawner: Spawner) {
     heap_allocator!(size: 32 * 1024);
 
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
     #[cfg(feature = "esp32")]

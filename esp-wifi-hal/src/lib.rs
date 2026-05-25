@@ -72,11 +72,19 @@ pub mod rates;
 mod sync;
 
 mod edca;
-
-#[cfg(feature = "esp32")]
-use esp32 as esp_pac;
-#[cfg(feature = "esp32s2")]
-use esp32s2 as esp_pac;
+cfg_select! {
+    feature = "esp32" => {
+        use esp32 as esp_pac;
+        use esp_wifi_sys_esp32 as esp_wifi_sys;
+    }
+    feature = "esp32s2" => {
+        use esp32s2 as esp_pac;
+        use esp_wifi_sys_esp32s2 as esp_wifi_sys;
+    }
+    _ => {
+        compile_error!("Adjust this for a new chip.");
+    }
+}
 
 #[cfg(not(feature = "critical_section"))]
 type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;

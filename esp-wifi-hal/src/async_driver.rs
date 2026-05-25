@@ -14,7 +14,7 @@ use crate::{
     rates::TxPhyRate,
 };
 use embassy_sync::blocking_mutex;
-use esp_hal::{dma::DmaDescriptor, handler, interrupt::CpuInterrupt, peripherals::WIFI};
+use esp_hal::{dma::DmaDescriptor, handler, peripherals::WIFI};
 use macro_bits::{bit, check_bit};
 
 use crate::{
@@ -1124,11 +1124,7 @@ impl<'res> WiFi<'res> {
         trace!("Initializing WiFi.");
         let ll_driver = LowLevelDriver::new(wifi);
 
-        ll_driver.configure_interrupt(
-            WiFiInterrupt::Mac,
-            CpuInterrupt::Interrupt0LevelPriority1,
-            mac_handler,
-        );
+        ll_driver.configure_interrupt(WiFiInterrupt::Mac, mac_handler);
 
         #[cfg(pwr_interrupt_present)]
         ll_driver.configure_interrupt(

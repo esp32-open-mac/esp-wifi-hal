@@ -9,12 +9,11 @@ use core::{
 };
 
 use esp_hal::{
-    clock::ModemClockController,
     dma::DmaDescriptor,
-    interrupt::{self, CpuInterrupt, InterruptHandler},
-    peripherals::{LPWR, WIFI as HalWIFI},
+    interrupt::InterruptHandler,
+    peripherals::{DPORT, LPWR, WIFI as HalWIFI},
 };
-use esp_phy::{PhyController, PhyInitGuard};
+use esp_phy::{PhyInitGuard, enable_phy};
 use macro_bits::{bit, check_bit};
 
 use crate::{
@@ -201,11 +200,6 @@ interrupt_cause_struct! {
 pub enum WiFiInterrupt {
     /// Medium Access Control interrupt
     Mac,
-    /// Baseband interrupt
-    ///
-    /// NOTE: We know literally nothing about this interrupt, as it doesn't appear to be used at
-    /// all. This is only included for completeness.
-    Bb,
     #[cfg(pwr_interrupt_present)]
     /// Low power interrupt
     Pwr,
@@ -215,7 +209,6 @@ impl From<WiFiInterrupt> for PacInterrupt {
     fn from(value: WiFiInterrupt) -> Self {
         match value {
             WiFiInterrupt::Mac => PacInterrupt::WIFI_MAC,
-            WiFiInterrupt::Bb => PacInterrupt::WIFI_BB,
             #[cfg(pwr_interrupt_present)]
             WiFiInterrupt::Pwr => PacInterrupt::WIFI_PWR,
         }
@@ -595,7 +588,13 @@ impl LowLevelDriver {
     /// assumptions made by some pieces of code.
     unsafe fn reset_mac(&self) {
         // Perform a full reset of the Wi-Fi module.
-        unsafe { HalWIFI::steal() }.reset_wifi_mac();
+        cfg_select! {
+            feature = "esp32" => {
+                let dport = DPORT::regs();
+                dport.wifi_rst_en().modify(|_, w| w.mac_rst().set_bit());
+                dport.wifi_rst_en().modify(|_, w| w.mac_rst().clear_bit());
+            }
+        }
         // NOTE: coex_bt_high_prio would usually be here
 
         // Disable RX
@@ -682,18 +681,22 @@ impl LowLevelDriver {
         unsafe {
             self.set_module_status(true);
         }
-        let mut hal_wifi = unsafe { HalWIFI::steal() };
         #[cfg(esp32)]
-        {
-            <HalWIFI<'_> as esp_phy::MacTimeExt>::set_mac_time_update_cb(&hal_wifi, |duration| {
-                let _ = MAC_TIME_OFFSET
-                    .fetch_add(duration.as_micros(), core::sync::atomic::Ordering::Relaxed);
-            });
-        }
+        esp_phy::set_mac_time_update_cb(|duration| {
+            let _ = MAC_TIME_OFFSET
+                .fetch_add(duration.as_micros(), core::sync::atomic::Ordering::Relaxed);
+        });
         // Enable the modem clock.
-        hal_wifi.enable_modem_clock(true);
+        let enable_mask = cfg_select! {
+            feature = "esp32" => 0x00000406,
+            feature = "esp32s2" => 0x000007cf,
+            _ => compile_error!("If you're adding a new chip, you have to adjust the modem clock enable mask.")
+        };
+        esp_hal::peripherals::DPORT::regs()
+            .wifi_clk_en()
+            .modify(|r, w| unsafe { w.bits(r.bits() | enable_mask) });
         // Initialize the PHY.
-        self._phy_init_guard = Some(hal_wifi.enable_phy());
+        self._phy_init_guard = Some(enable_phy());
         unsafe {
             self.reset_mac();
             self.set_mac_state(true);
@@ -742,17 +745,18 @@ impl LowLevelDriver {
     /// Configure the specified interrupt.
     ///
     /// Usually all relevant interrupts are bound to the same interrupt handler and CPU interrupt.
-    /// The default CPU interrupt for Wi-Fi is [CpuInterrupt::Interrupt0LevelPriority1].
     pub fn configure_interrupt(
         &self,
         interrupt: WiFiInterrupt,
-        cpu_interrupt: CpuInterrupt,
         interrupt_handler: InterruptHandler,
     ) {
-        unsafe {
-            let interrupt = interrupt.into();
-            interrupt::bind_interrupt(interrupt, interrupt_handler.handler());
-            let _ = interrupt::enable_direct(interrupt, cpu_interrupt);
+        let wifi = unsafe { HalWIFI::steal() };
+
+        match interrupt {
+            WiFiInterrupt::Mac => {
+                wifi.bind_mac_interrupt(interrupt_handler);
+                wifi.enable_mac_interrupt(interrupt_handler.priority());
+            }
         }
     }
 

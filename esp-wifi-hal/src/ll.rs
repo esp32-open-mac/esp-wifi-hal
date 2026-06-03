@@ -11,8 +11,19 @@ use core::{
 use esp_hal::{
     dma::DmaDescriptor,
     interrupt::InterruptHandler,
-    peripherals::{DPORT, LPWR, WIFI as HalWIFI},
+    peripherals::{LPWR, WIFI as HalWIFI},
 };
+
+cfg_select! {
+    feature = "esp32" => {
+        use esp_hal::peripherals::DPORT as SYSCON;
+    }
+    feature = "esp32s2" => {
+
+        use esp_hal::peripherals::SYSCON;
+    }
+}
+
 use esp_phy::{PhyInitGuard, enable_phy};
 use macro_bits::{bit, check_bit};
 
@@ -589,11 +600,12 @@ impl LowLevelDriver {
     unsafe fn reset_mac(&self) {
         // Perform a full reset of the Wi-Fi module.
         cfg_select! {
-            feature = "esp32" => {
-                let dport = DPORT::regs();
-                dport.wifi_rst_en().modify(|_, w| w.mac_rst().set_bit());
-                dport.wifi_rst_en().modify(|_, w| w.mac_rst().clear_bit());
+            any(feature = "esp32", feature = "esp32s2") => {
+                let syscon = SYSCON::regs();
+                syscon.wifi_rst_en().modify(|_, w| w.mac_rst().set_bit());
+                syscon.wifi_rst_en().modify(|_, w| w.mac_rst().clear_bit());
             }
+            _ => compile_error!("Adjust this for a new chip.")
         }
         // NOTE: coex_bt_high_prio would usually be here
 
@@ -610,14 +622,16 @@ impl LowLevelDriver {
     /// driver would.
     unsafe fn set_mac_state(&self, intialized: bool) {
         // TODO: Figure out, what these registers do precisely and move them into the PAC.
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "esp32")] {
+        cfg_select! {
+            feature = "esp32" => {
                 const MAC_INIT_MASK: u32 = 0xffffe800;
                 const MAC_READY_MASK: u32 = 0x2000;
-            } else if #[cfg(feature = "esp32s2")] {
+            }
+            feature = "esp32s2" => {
                 const MAC_INIT_MASK: u32 = 0xff00efff;
                 const MAC_READY_MASK: u32 = 0x6000;
-            } else {
+            }
+            _ => {
                 compile_error!("The MAC init mask may have to be updated for different chips.");
             }
         }
@@ -692,7 +706,7 @@ impl LowLevelDriver {
             feature = "esp32s2" => 0x000007cf,
             _ => compile_error!("If you're adding a new chip, you have to adjust the modem clock enable mask.")
         };
-        esp_hal::peripherals::DPORT::regs()
+        SYSCON::regs()
             .wifi_clk_en()
             .modify(|r, w| unsafe { w.bits(r.bits() | enable_mask) });
         // Initialize the PHY.
@@ -756,6 +770,11 @@ impl LowLevelDriver {
             WiFiInterrupt::Mac => {
                 wifi.bind_mac_interrupt(interrupt_handler);
                 wifi.enable_mac_interrupt(interrupt_handler.priority());
+            }
+            #[cfg(pwr_interrupt_present)]
+            WiFiInterrupt::Pwr => {
+                wifi.bind_pwr_interrupt(interrupt_handler);
+                wifi.enable_pwr_interrupt(interrupt_handler.priority());
             }
         }
     }
@@ -1461,10 +1480,11 @@ impl LowLevelDriver {
 
     /// Get the offset between the system timers and the MAC timer.
     pub fn mac_time_offset() -> esp_hal::time::Duration {
-        cfg_if::cfg_if! {
-            if #[cfg(esp32)] {
+        cfg_select! {
+            esp32 => {
                 let offset = MAC_TIME_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
-            } else {
+            }
+            _ => {
                 let offset = 0;
             }
         }
@@ -1490,10 +1510,14 @@ impl LowLevelDriver {
     pub fn set_channel(&self, channel_number: u8) {
         unsafe {
             self.set_mac_state(false);
-            #[cfg(nomac_channel_set)]
-            crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
-            #[cfg(not(nomac_channel_set))]
-            crate::ffi::chip_v7_set_chan(channel_number, 0);
+            cfg_select! {
+                nomac_channel_set => {
+                    crate::ffi::chip_v7_set_chan_nomac(channel_number, 0);
+                }
+                _ => {
+                    crate::ffi::chip_v7_set_chan(channel_number, 0);
+                }
+            }
             disable_wifi_agc();
             self.set_mac_state(true);
             enable_wifi_agc();

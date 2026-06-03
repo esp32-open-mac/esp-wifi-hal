@@ -86,10 +86,14 @@ cfg_select! {
     }
 }
 
-#[cfg(not(feature = "critical_section"))]
-type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;
-#[cfg(feature = "critical_section")]
-type DefaultRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+cfg_select! {
+    feature = "critical_section" => {
+        type DefaultRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    }
+    _ => {
+        type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    }
+}
 
 /// Useful items to include by default.
 pub mod prelude {

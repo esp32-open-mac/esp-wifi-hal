@@ -108,11 +108,15 @@ impl BorrowedBuffer<'_> {
     /// The Received Signal Strength Indicator (RSSI).
     pub fn rssi(&self) -> i8 {
         let rssi = self.raw_header().rssi() as i8;
-        if cfg!(feature = "esp32") {
-            rssi - 96
-        } else {
-            rssi
-        }
+        let offset = cfg_select! {
+            feature = "esp32" => {
+                -96
+            }
+            _ => {
+                0
+            }
+        };
+        rssi + offset
     }
     /// The time at which the packet was received in µs.
     pub fn timestamp(&self) -> u32 {

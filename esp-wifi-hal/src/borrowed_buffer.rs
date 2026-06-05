@@ -38,7 +38,7 @@ impl BorrowedBuffer<'_> {
         }
     }
     /// Get a pointer to the RX control header.
-    pub fn raw_header(&self) -> &wifi_pkt_rx_ctrl_t {
+    pub const fn raw_header(&self) -> &wifi_pkt_rx_ctrl_t {
         unsafe {
             (self.dma_descriptor.buffer as *mut wifi_pkt_rx_ctrl_t)
                 .as_ref()

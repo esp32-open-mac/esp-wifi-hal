@@ -719,6 +719,16 @@ mod private {
         /// Get the DMA list.
         fn dma_list_ref(&self) -> &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DmaList>>;
     }
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct ExtractedParameters {
+        duration: u16,
+        is_unicast: bool,
+    }
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct EdcaTxParameters {
+        backoff_slots: usize,
+        aifsn: usize,
+    }
     /// Extends the low level driver with the asynchronous transmission system.
     pub trait AsyncTransmitExt: HasLowLevelDriver {
         /// Sets up a frame for transmission.
@@ -729,9 +739,8 @@ mod private {
             mac_parameters: &TxMacParameters,
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
-            duration: u16,
-            backoff_slots: usize,
-            aifsn: usize,
+            extracted_parameters: ExtractedParameters,
+            edca_tx_parameters: EdcaTxParameters,
         ) {
             // To setup a frame for transmission, we have to do a few things with the hardware.
             // 1. Configure channel access parameters, like the medium access timeout (unsure), as
@@ -743,8 +752,18 @@ mod private {
             //    HE and VHT.)
             let ll_driver = unsafe { self.ll_driver_ref() };
 
-            ll_driver.set_channel_access_parameters(queue, 10, backoff_slots, aifsn);
-            ll_driver.set_plcp0(queue, dma_descriptor, mac_parameters.wait_for_ack);
+            ll_driver.set_channel_access_parameters(
+                queue,
+                10,
+                edca_tx_parameters.backoff_slots,
+                edca_tx_parameters.aifsn,
+            );
+            ll_driver.set_plcp0(
+                queue,
+                dma_descriptor,
+                mac_parameters.wait_for_ack,
+                extracted_parameters.is_unicast,
+            );
             ll_driver.set_plcp1(
                 queue,
                 rate,
@@ -753,7 +772,7 @@ mod private {
                 mac_parameters.key_slot_index,
             );
             ll_driver.set_plcp2(queue);
-            ll_driver.set_duration(queue, duration);
+            ll_driver.set_duration(queue, extracted_parameters.duration);
 
             if let TxPhyRate::Ht(ht_rate) = rate {
                 ll_driver.set_ht_parameters(
@@ -774,8 +793,7 @@ mod private {
             mac_parameters: &'a TxMacParameters,
             queue: HardwareTxQueue,
             dma_descriptor: Pin<&DmaDescriptor>,
-            duration_and_backoff_slots: Result<(u16, u16), TxError>,
-            aifsn: usize,
+            fallible_params: Result<(ExtractedParameters, EdcaTxParameters), TxError>,
         ) -> impl Future<Output = Result<(), TxError>> + Send + Sync + 'a {
             let ll_driver = unsafe { self.ll_driver_ref() };
             let hardware_tx_result_signal = &HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()];
@@ -788,7 +806,7 @@ mod private {
             });
             // If any error was forwarded through the duration, we don't do anything here and
             // return an error on the first poll.
-            if let Ok((duration, backoff_slots)) = duration_and_backoff_slots {
+            if let Ok((extracted_parameters, edca_tx_parameters)) = fallible_params {
                 // Setup the frame for transmission. We'll start TX a little later.
                 self.setup_tx(
                     interface,
@@ -796,9 +814,8 @@ mod private {
                     mac_parameters,
                     queue,
                     dma_descriptor.as_ref(),
-                    duration,
-                    backoff_slots as usize,
-                    aifsn,
+                    extracted_parameters,
+                    edca_tx_parameters,
                 );
 
                 // This compensates for other slots being marked as done, without it being used at all.
@@ -812,7 +829,7 @@ mod private {
             // Note that self isn't used anywhere in this block, thus allowing the future to be
             // Send + Sync.
             async move {
-                duration_and_backoff_slots?;
+                fallible_params?;
                 // We wait for the transmission to complete here.
                 HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
                     .wait()
@@ -837,13 +854,14 @@ mod private {
             interface: usize,
             mac_parameters: &TxMacParameters,
             mpdu_buf: &mut [u8],
-        ) -> Result<u16, TxError> {
+        ) -> Result<ExtractedParameters, TxError> {
             let Some(duration) = mpdu_buf
                 .get(2..4)
                 .map(|bytes| u16::from_le_bytes(bytes.try_into().unwrap()))
             else {
                 return Err(TxError::BufferTooShort);
             };
+            let is_unicast = mpdu_buf[4] & 1 == 0;
 
             if mac_parameters.override_seq_num {
                 let seq_num = CURRENT_SEQUENCE_NUMBER.fetch_add(1, Ordering::Relaxed);
@@ -862,7 +880,10 @@ mod private {
             }
             WiFi::validate_interface(interface).map_err(|_| TxError::OutOfBounds)?;
 
-            Ok(duration)
+            Ok(ExtractedParameters {
+                duration,
+                is_unicast,
+            })
         }
         fn prepare_dma_descriptor_for_tx(mpdu_buf: &mut [u8], dma_descriptor: &mut DmaDescriptor) {
             // Attach length for FCS.
@@ -884,9 +905,14 @@ mod private {
             mut dma_descriptor: Pin<&'a mut DmaDescriptor>,
             mpdu_buf: &mut [u8],
         ) -> impl Future<Output = Result<(), TxError>> + Send + Sync + 'a {
-            let duration = self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf);
+            let duration_and_is_unicast =
+                self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf);
             Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
 
+            let aifsn = mac_parameters
+                .override_edca_parameters
+                .aifsn
+                .unwrap_or(queue.default_aifsn()) as usize;
             let backoff_slots = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
                 EdcaContentionState::new(
                     mac_parameters
@@ -901,7 +927,17 @@ mod private {
             };
             let duration_and_backoff_slots = backoff_slots
                 .ok_or(TxError::InvalidEdcaParameters)
-                .map(|backoff_slots| duration.map(|duration| (duration, backoff_slots as u16)))
+                .map(|backoff_slots| {
+                    duration_and_is_unicast.map(|extracted_parameters| {
+                        (
+                            extracted_parameters,
+                            EdcaTxParameters {
+                                aifsn,
+                                backoff_slots,
+                            },
+                        )
+                    })
+                })
                 .flatten();
 
             self.transmit_raw(
@@ -911,10 +947,6 @@ mod private {
                 queue,
                 dma_descriptor.into_ref(),
                 duration_and_backoff_slots,
-                mac_parameters
-                    .override_edca_parameters
-                    .aifsn
-                    .unwrap_or(queue.default_aifsn()) as usize,
             )
         }
         #[allow(clippy::too_many_arguments)]
@@ -932,7 +964,8 @@ mod private {
             mut dma_descriptor: Pin<&'a mut DmaDescriptor>,
             mpdu_buf: &mut [u8],
         ) -> Result<u8, TxError> {
-            let duration = self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf)?;
+            let extracted_parameters =
+                self.prepare_frame_for_tx(interface, mac_parameters, mpdu_buf)?;
             Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
 
             // We start transmitting and adapt the rate as required. As soon, as a transmission
@@ -951,6 +984,11 @@ mod private {
                 None
             };
 
+            let aifsn = mac_parameters
+                .override_edca_parameters
+                .aifsn
+                .unwrap_or(queue.default_aifsn()) as usize;
+
             for (i, tx_attempt_rate) in error_behaviour
                 .tx_attempt_rate_iter(plcp_parameters.rate)
                 .enumerate()
@@ -958,7 +996,7 @@ mod private {
                 let backoff_slots = edca_contention_state
                     .as_ref()
                     .map(EdcaContentionState::random_backoff_slot_count)
-                    .unwrap_or(1) as u16;
+                    .unwrap_or(1);
                 // The transmission will already be started, before the first poll, which ensures
                 // that TX happens almost in real time.
                 last_res = self
@@ -968,11 +1006,13 @@ mod private {
                         mac_parameters,
                         queue,
                         dma_descriptor.as_ref(),
-                        Ok((duration, backoff_slots)),
-                        mac_parameters
-                            .override_edca_parameters
-                            .aifsn
-                            .unwrap_or(queue.default_aifsn()) as usize,
+                        Ok((
+                            extracted_parameters,
+                            EdcaTxParameters {
+                                aifsn,
+                                backoff_slots,
+                            },
+                        )),
                     )
                     .await
                     .map(|_| i as u8);
@@ -1131,11 +1171,7 @@ impl<'res> WiFi<'res> {
         ll_driver.configure_interrupt(WiFiInterrupt::Mac, mac_handler);
 
         #[cfg(pwr_interrupt_present)]
-        ll_driver.configure_interrupt(
-            WiFiInterrupt::Pwr,
-            CpuInterrupt::Interrupt2LevelPriority1,
-            pwr_handler,
-        );
+        ll_driver.configure_interrupt(WiFiInterrupt::Pwr, pwr_handler);
 
         let (dma_list, ll_driver, tx_dma_descriptors) = unsafe { wifi_resources.init(ll_driver) };
 

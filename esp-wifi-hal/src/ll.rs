@@ -1210,23 +1210,27 @@ impl LowLevelDriver {
         queue: HardwareTxQueue,
         dma_list_item: Pin<&DmaDescriptor>,
         wait_for_ack: bool,
+        enable_rts: bool,
     ) {
         Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
             .plcp0()
             .modify(|_, w| unsafe {
                 w.dma_addr()
-                    .bits(
-                        (dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance()
+                    .bits(                        (dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance()
                             as u32,
                     )
                     .wait_for_ack()
                     .bit(wait_for_ack)
             });
-        Self::regs_internal()
-            .tx_slot_config(queue.hardware_slot())
-            .plcp0()
-            .modify(|r, w| unsafe { w.bits(r.bits() | 0x1800_0000) });
+        if enable_rts {
+            // Setting 0x1000_0000 leads to the hardware transmitting CTS-to-Self frames
+            // These however seem a bit garbled, so we'll leave it out for now.
+            Self::regs_internal()
+                .tx_slot_config(queue.hardware_slot())
+                .plcp0()
+                .modify(|r, w| unsafe { w.bits(r.bits() | 0x0800_0000) });
+        }
     }
     #[inline]
     /// Configure the PLCP1 register for a TX queue.

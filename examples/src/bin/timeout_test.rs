@@ -11,7 +11,7 @@ use log::info;
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
     let buf = mk_static!([u8; 300], [0x00u8; 300]);
     let written = buf

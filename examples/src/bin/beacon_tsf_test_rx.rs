@@ -9,7 +9,7 @@ use esp_wifi_hal::prelude::*;
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
     elements::VendorSpecificElement,
-    mgmt_frame::{body::HasElements, BeaconFrame},
+    mgmt_frame::{BeaconFrame, body::HasElements},
     scroll::Pread,
 };
 
@@ -17,7 +17,7 @@ const SSID: &str = "BEACON TSF HIL TEST";
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_scanning_mode(0, ScanningMode::BeaconsOnly);

@@ -4,8 +4,8 @@ use embassy_executor::Spawner;
 use esp_backtrace as _;
 use esp_wifi_hal::prelude::*;
 use examples::{
-    common_init, embassy_init, get_test_channel, insert_key, setup_filters, wifi_init, AP_ADDRESS,
-    GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS,
+    AP_ADDRESS, GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS, common_init, embassy_init,
+    get_test_channel, insert_key, setup_filters, wifi_init,
 };
 use ieee80211::{crypto::MicState, data_frame::DataFrame, match_frames};
 use log::info;
@@ -13,7 +13,7 @@ use log::info;
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());

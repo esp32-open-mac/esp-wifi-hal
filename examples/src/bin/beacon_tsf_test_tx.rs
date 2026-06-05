@@ -7,13 +7,13 @@ use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_rtos::main;
 use esp_wifi_hal::prelude::*;
-use examples::{common_init, embassy_init, setup_filters, wifi_init, AP_ADDRESS};
+use examples::{AP_ADDRESS, common_init, embassy_init, setup_filters, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
     elements::VendorSpecificElement,
     mac_parser::BROADCAST,
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
     ssid,
 };
@@ -23,7 +23,7 @@ const SSID: &str = "BEACON TSF HIL TEST";
 #[main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));

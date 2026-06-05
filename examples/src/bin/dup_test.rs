@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::efuse::Efuse;
+use esp_hal::efuse::base_mac_address;
 use esp_wifi_hal::prelude::*;
 use examples::{common_init, embassy_init, mk_static, wifi_init};
 use ieee80211::{
@@ -24,10 +24,11 @@ use ieee80211::{
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
-    let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
+    let module_mac_address: [u8; 6] = base_mac_address().as_bytes().try_into().unwrap();
+    let module_mac_address = MACAddress::new(module_mac_address);
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);
     let mut seq_num = 0;
     loop {

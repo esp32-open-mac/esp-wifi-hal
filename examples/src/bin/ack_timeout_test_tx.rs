@@ -18,13 +18,13 @@ use log::info;
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let mut wifi = wifi_init(peripherals.WIFI, peripherals.SW_INTERRUPT);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());
     setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
 
-    let buf = mk_static!([u8; 300], [0x00u8; 300]);
+    let buf = mk_static!([u8; 1600], [0x00u8; 1600]);
     let written = buf
         .pwrite(
             DataFrameBuilder::new()

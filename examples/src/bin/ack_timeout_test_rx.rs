@@ -10,8 +10,8 @@ use examples::{AP_ADDRESS, STA_ADDRESS, common_init, embassy_init, get_test_chan
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let mut wifi = wifi_init(peripherals.WIFI, peripherals.SW_INTERRUPT);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let _ = wifi.set_channel(get_test_channel());
     let _ = wifi.set_filter(0, RxFilterBank::ReceiverAddress, STA_ADDRESS);

@@ -5,13 +5,13 @@ use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_wifi_hal::prelude::*;
 use examples::{
-    common_init, embassy_init, get_test_channel, insert_key, setup_filters, wifi_init, AP_ADDRESS,
-    GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS,
+    AP_ADDRESS, GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS, common_init, embassy_init,
+    get_test_channel, insert_key, setup_filters, wifi_init,
 };
 
 use ieee80211::{
     crypto::{CryptoHeader, MicState},
-    data_frame::{builder::DataFrameBuilder, DataFrame},
+    data_frame::{DataFrame, builder::DataFrameBuilder},
     mac_parser::MACAddress,
     scroll::Pwrite,
 };
@@ -41,7 +41,7 @@ const PAIRWISE_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::new()
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
 
     info!("TX");

@@ -1,0 +1,17 @@
+[package]
+name = "esp-wifi-rates"
+version = "0.1.0"
+edition = "2024"
+authors = ["Frostie314159 <frostie.neuenhausen@gmail.com>"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+description = "Type-safe Wi-Fi PHY rate handling for the ESP32-series chips."
+homepage = "https://esp32-open-mac.be/"
+repository = "https://github.com/esp32-open-mac/esp-wifi-hal"
+
+[dependencies]
+defmt = { version = "1.1.0", default-features = false, optional = true }
+num-rational = { version = "0.4.2", default-features = false }
+
+[features]
+defmt = ["dep:defmt"]

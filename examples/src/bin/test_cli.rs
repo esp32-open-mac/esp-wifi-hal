@@ -368,12 +368,12 @@ async fn sniff_command(
         };
         let _ = write!(
             uart0_tx,
-            "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Mbit/s Address 1: {}",
+            "Type: {:?} RSSI: {:03} dBm Airtime: {} ns Interfaces: {:?} PHY Rate: {:?} Mbit/s Address 1: {}",
             generic_frame.frame_control_field().frame_type(),
             received.rssi(),
-            received.rx_state(),
+            phy_rate.airtime(received.unpadded_buffer_len()),
             &interfaces[..if_count],
-            phy_rate.data_rate().to_integer() / 1_000_000,
+            phy_rate.data_rate() / 1_000_000,
             generic_frame.address_1()
         );
         if let Some(address_2) = generic_frame.address_2() {

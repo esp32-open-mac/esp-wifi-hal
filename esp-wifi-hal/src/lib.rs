@@ -10,11 +10,11 @@
 //!
 //! Inside the driver, we initialize this list and pass it to the hardware. When an interrupt is
 //! received and the status code indicates, that a frame was received, we internally increase the
-//! number of frames, that are currently waiting in the RX queue. Internally, [WiFi::receive]
+//! number of frames, that are currently waiting in the RX queue. Internally, [prelude::AsyncReceive::receive]
 //! asynchronously waits for a frame to be received and takes the first descriptor out of the list.
 //! For unknown reasons, sometimes these frames can be empty, so we loop and wait for a valid frame
-//! to be received. That DMA descriptor is then wrapped into a [BorrowedBuffer], which is then
-//! returned. Once that [BorrowedBuffer] is dropped, it will automatically be appended to the end
+//! to be received. That DMA descriptor is then wrapped into a [prelude::BorrowedBuffer], which is then
+//! returned. Once that [prelude::BorrowedBuffer] is dropped, it will automatically be appended to the end
 //! of the DMA list.
 //!
 //! ### Transmit (TX)
@@ -68,7 +68,7 @@ mod dma_list;
 mod ffi;
 pub mod ll;
 /// Support structures for data rates.
-pub mod rates;
+pub use esp_wifi_rates as rates;
 mod sync;
 
 mod edca;

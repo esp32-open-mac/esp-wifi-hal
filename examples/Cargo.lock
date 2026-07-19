@@ -975,6 +975,7 @@ dependencies = [
  "esp-hal",
  "esp-phy",
  "esp-sync 0.2.1",
+ "esp-wifi-rates",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32s2",
  "esp32",
@@ -984,6 +985,15 @@ dependencies = [
  "num",
  "portable-atomic",
  "static_cell",
+]
+
+[[package]]
+name = "esp-wifi-rates"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81bb20b756010e1134b6e90be66ce8ac1129a85c6fcbd8ed14e16b7c09f9c257"
+dependencies = [
+ "num-rational",
 ]
 
 [[package]]

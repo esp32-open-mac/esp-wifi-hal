@@ -38,6 +38,7 @@ bitfield-struct = "0.13.0"
 log = { version = "0.4.28", optional = true }
 critical-section = "1.2.0"
 num = { version = "0.4.3", default-features = false }
+esp-wifi-rates = { version = "0.1.0" }
 
 [profile.dev]
 # Rust debug is too slow.
@@ -69,6 +70,12 @@ esp32s2 = [
   "esp-sync/esp32s2",
 ]
 
-defmt = ["dep:defmt", "defmt-or-log/defmt", "esp-phy/defmt", "esp-sync/defmt"]
+defmt = [
+  "dep:defmt",
+  "defmt-or-log/defmt",
+  "esp-phy/defmt",
+  "esp-sync/defmt",
+  "esp-wifi-rates/defmt",
+]
 log = ["dep:log", "defmt-or-log/log", "esp-phy/log-04", "esp-sync/log-04"]
 critical_section = []

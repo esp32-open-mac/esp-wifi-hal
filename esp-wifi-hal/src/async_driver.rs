@@ -217,7 +217,7 @@ pub trait ChannelControl: HasLowLevelDriver {
 pub trait CryptoControl: HasLowLevelDriver {
     /// Check if the key slot is active.
     ///
-    /// If `key_slot` is larger than or equal to [WiFi::KEY_SLOT_COUNT], an error will be returned.
+    /// If `key_slot` is larger than or equal to [KEY_SLOT_COUNT], an error will be returned.
     fn key_slot_in_use(&self, key_slot: usize) -> Result<bool, OutOfBounds> {
         WiFi::validate_key_slot(key_slot)
             .map(|_| unsafe { self.ll_driver_ref() }.key_slot_enabled(key_slot))
@@ -681,7 +681,7 @@ pub enum TxError {
     OutOfBounds,
     /// The provided EDCA parameters were invalid.
     ///
-    /// Currently this only happens, if [EdcaParameters::contention_window_exponent_range] is empty.
+    /// Currently this only happens, if [OverrideEdcaParameters::contention_window_exponent_range] is empty.
     InvalidEdcaParameters,
 }
 /// The current sequence number tracked by the driver.

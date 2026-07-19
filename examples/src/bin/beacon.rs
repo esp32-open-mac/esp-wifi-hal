@@ -74,7 +74,7 @@ async fn main(_spawner: Spawner) {
             },
         };
         let written = buffer.pwrite(frame, 0).unwrap();
-        let _ = wifi
+        wifi
             .transmit_oneshot(
                 0,
                 &TxPlcpParameters {

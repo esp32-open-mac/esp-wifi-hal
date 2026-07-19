@@ -1100,7 +1100,7 @@ impl LowLevelDriver {
     ///
     /// # Safety
     /// This is only expected to be called in the MAC ISR handler. For other purposes use
-    /// [LowLevelDriver::start_tx_for_slot]
+    /// [LowLevelDriver::start_tx_queue]
     pub unsafe fn set_tx_queue_status(queue: HardwareTxQueue, queue_status: HardwareTxQueueStatus) {
         Self::regs_internal()
             .tx_slot_config(queue.hardware_slot())
@@ -1217,7 +1217,8 @@ impl LowLevelDriver {
             .plcp0()
             .modify(|_, w| unsafe {
                 w.dma_addr()
-                    .bits(                        (dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance()
+                    .bits(
+                        (dma_list_item.get_ref() as *const DmaDescriptor).expose_provenance()
                             as u32,
                     )
                     .wait_for_ack()

@@ -7,6 +7,6 @@ use examples::{common_init, embassy_init, wifi_init};
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let _wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let _wifi = wifi_init(peripherals.WIFI);
 }

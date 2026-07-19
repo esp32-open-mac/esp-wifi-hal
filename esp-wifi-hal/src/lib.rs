@@ -10,11 +10,11 @@
 //!
 //! Inside the driver, we initialize this list and pass it to the hardware. When an interrupt is
 //! received and the status code indicates, that a frame was received, we internally increase the
-//! number of frames, that are currently waiting in the RX queue. Internally, [WiFi::receive]
+//! number of frames, that are currently waiting in the RX queue. Internally, [prelude::AsyncReceive::receive]
 //! asynchronously waits for a frame to be received and takes the first descriptor out of the list.
 //! For unknown reasons, sometimes these frames can be empty, so we loop and wait for a valid frame
-//! to be received. That DMA descriptor is then wrapped into a [BorrowedBuffer], which is then
-//! returned. Once that [BorrowedBuffer] is dropped, it will automatically be appended to the end
+//! to be received. That DMA descriptor is then wrapped into a [prelude::BorrowedBuffer], which is then
+//! returned. Once that [prelude::BorrowedBuffer] is dropped, it will automatically be appended to the end
 //! of the DMA list.
 //!
 //! ### Transmit (TX)
@@ -58,26 +58,52 @@ extern crate defmt_or_log;
 #[macro_use]
 extern crate core;
 
-mod crypto;
+/// Asynchronous driver implementation.
+pub mod async_driver;
+/// Borrowed RX buffers.
+pub mod borrowed_buffer;
+/// Support structures for HW crypto.
+pub mod crypto;
 mod dma_list;
 mod ffi;
-mod ll;
-mod phy_init_data;
-mod rates;
+pub mod ll;
+/// Support structures for data rates.
+pub use esp_wifi_rates as rates;
 mod sync;
-mod wmac;
 
-#[cfg(feature = "esp32")]
-use esp32 as esp_pac;
-#[cfg(feature = "esp32s2")]
-use esp32s2 as esp_pac;
+mod edca;
+cfg_select! {
+    feature = "esp32" => {
+        use esp32 as esp_pac;
+        use esp_wifi_sys_esp32 as esp_wifi_sys;
+    }
+    feature = "esp32s2" => {
+        use esp32s2 as esp_pac;
+        use esp_wifi_sys_esp32s2 as esp_wifi_sys;
+    }
+    _ => {
+        compile_error!("Adjust this for a new chip.");
+    }
+}
 
-pub use crypto::*;
-pub use dma_list::WiFiResources;
-pub use rates::*;
-pub use wmac::*;
+cfg_select! {
+    feature = "critical_section" => {
+        type DefaultRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+    }
+    _ => {
+        type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;
+    }
+}
 
-#[cfg(not(feature = "critical_section"))]
-type DefaultRawMutex = embassy_sync::blocking_mutex::raw::NoopRawMutex;
-#[cfg(feature = "critical_section")]
-type DefaultRawMutex = embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+/// Useful items to include by default.
+pub mod prelude {
+    pub use crate::async_driver::*;
+    pub use crate::borrowed_buffer::*;
+    pub use crate::crypto::*;
+    pub use crate::ll::{
+        ChannelAccessError, ControlFrameFilterConfig, EdcaAccessCategory, HardwareTxQueue,
+        INTERFACE_COUNT, KEY_SLOT_COUNT, MacProtocolError, RxFilterBank,
+    };
+    pub use crate::rates::*;
+    pub use crate::sync::DropGuard;
+}

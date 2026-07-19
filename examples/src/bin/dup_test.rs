@@ -5,38 +5,30 @@ use core::marker::PhantomData;
 
 use embassy_executor::Spawner;
 use esp_backtrace as _;
-use esp_hal::efuse::Efuse;
-use esp_wifi_hal::{TxParameters, WiFiRate};
-use examples::{common_init, embassy_init, wifi_init};
+use esp_hal::efuse::base_mac_address;
+use esp_wifi_hal::prelude::*;
+use examples::{common_init, embassy_init, mk_static, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl},
     element_chain,
     elements::{
-        tim::{StaticBitmap, TIMBitmap, TIMElement},
         DSSSParameterSetElement,
+        tim::{StaticBitmap, TIMBitmap, TIMElement},
     },
-    mac_parser::{MACAddress, BROADCAST},
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mac_parser::{BROADCAST, MACAddress},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
     ssid, supported_rates,
 };
 
-macro_rules! mk_static {
-    ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
-        #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
-        x
-    }};
-}
-
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
-    let module_mac_address = MACAddress::new(Efuse::read_base_mac_address());
+    let module_mac_address: [u8; 6] = base_mac_address().as_bytes().try_into().unwrap();
+    let module_mac_address = MACAddress::new(module_mac_address);
     let buf = mk_static!([u8; 1500], [0x00u8; 1500]);
     let mut seq_num = 0;
     loop {
@@ -78,18 +70,23 @@ async fn main(_spawner: Spawner) {
             },
         };
         let written = buf.pwrite(frame, 0).unwrap();
-        wifi.transmit(
-            &mut buf[..written],
-            &TxParameters {
+        wifi.transmit_oneshot(
+            0,
+            &TxPlcpParameters {
                 rate: if seq_num % 2 == 0 {
-                    WiFiRate::PhyRate1ML
+                    OfdmRate::Mbits6
                 } else {
-                    WiFiRate::PhyRate2ML
-                },
+                    OfdmRate::Mbits9
+                }
+                .into(),
+                ..Default::default()
+            },
+            &TxMacParameters {
                 override_seq_num: true,
                 ..Default::default()
             },
-            None,
+            HardwareTxQueue::Beacon,
+            &mut buf[..written],
         )
         .await
         .unwrap();

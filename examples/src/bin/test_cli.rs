@@ -13,30 +13,31 @@ use alloc::{
 };
 use embassy_executor::Spawner;
 use embassy_futures::{
-    select::{select, Either},
+    select::{Either, select},
     yield_now,
 };
 use embassy_time::{Duration, Instant, Ticker};
 use esp_backtrace as _;
 use esp_hal::{
-    efuse::Efuse,
-    uart::{Config, RxConfig, Uart, UartRx},
     Async,
+    efuse::base_mac_address,
+    uart::{Config, RxConfig, Uart, UartRx},
 };
-use esp_wifi_hal::{RxFilterBank, ScanningMode, TxParameters, WiFi, WiFiRate};
+use esp_wifi_hal::{ll::LowLevelDriver, prelude::*};
 use examples::{common_init, embassy_init, wifi_init};
 use ieee80211::{
+    GenericFrame,
     common::{CapabilitiesInformation, FrameType, ManagementFrameSubtype, TU},
     element_chain,
     elements::{
-        tim::{StaticBitmap, TIMBitmap, TIMElement},
         DSSSParameterSetElement, SSIDElement,
+        tim::{StaticBitmap, TIMBitmap, TIMElement},
     },
-    mac_parser::{MACAddress, BROADCAST},
+    mac_parser::{BROADCAST, MACAddress},
     match_frames,
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
-    supported_rates, GenericFrame,
+    supported_rates,
 };
 extern crate alloc;
 use esp_alloc::{self as _, heap_allocator};
@@ -53,7 +54,7 @@ async fn wait_for_quit(uart_rx: &mut UartRx<'_, Async>) {
     }
 }
 fn channel_cmd<'a>(
-    wifi: &WiFi,
+    wifi: &mut WiFi,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -91,7 +92,7 @@ fn channel_cmd<'a>(
     }
 }
 async fn scan_on_channel(
-    wifi: &WiFi<'_>,
+    wifi: &mut WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
     known_aps: &mut BTreeSet<String>,
 ) {
@@ -116,7 +117,7 @@ async fn scan_on_channel(
     }
 }
 async fn scan_command<'a>(
-    wifi: &WiFi<'_>,
+    wifi: &mut WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -134,7 +135,7 @@ async fn scan_command<'a>(
     match mode {
         Some("hop") => {
             let mut hop_interval = Ticker::every(Duration::from_millis(200));
-            let mut hop_sequence = repeat(1..13).flatten();
+            let mut hop_sequence = repeat(1..=14).flatten();
             loop {
                 if let Either::First(_) = select(
                     hop_interval.next(),
@@ -144,6 +145,7 @@ async fn scan_command<'a>(
                 {
                     let _ = wifi.set_channel(hop_sequence.next().unwrap());
                 }
+                yield_now().await;
             }
         }
         None => scan_on_channel(wifi, uart0_tx, &mut known_aps).await,
@@ -156,7 +158,7 @@ async fn scan_command<'a>(
     }
 }
 async fn beacon_command<'a>(
-    wifi: &WiFi<'_>,
+    wifi: &mut WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -181,7 +183,7 @@ async fn beacon_command<'a>(
         uart0_tx,
         "Transmitting beacons with SSID: {ssid} on channel {channel_number}."
     );
-    let mac_address = MACAddress::new(Efuse::read_base_mac_address());
+    let mac_address = MACAddress::new(base_mac_address().as_bytes().try_into().unwrap());
     let mut beacon_template = BeaconFrame {
         header: ManagementFrameHeader {
             bssid: mac_address,
@@ -225,35 +227,37 @@ async fn beacon_command<'a>(
         beacon_template.body.timestamp = start_timestamp.elapsed().as_micros();
         beacon_template.elements.next.next.next.inner.dtim_count = i % 2;
         let written = buf.pwrite(beacon_template, 0).unwrap();
-        let _ = wifi
-            .transmit(
-                &mut buf[..written],
-                &TxParameters {
-                    rate: WiFiRate::PhyRate1ML,
-                    override_seq_num: true,
-                    ..Default::default()
-                },
-                None,
-            )
-            .await
-            .unwrap();
+        wifi.transmit_oneshot(
+            1,
+            &TxPlcpParameters {
+                rate: TxPhyRate::Ht(HtRate::new(7, true, false).unwrap()),
+                ..Default::default()
+            },
+            &TxMacParameters {
+                override_seq_num: true,
+                ..Default::default()
+            },
+            HardwareTxQueue::Beacon,
+            &mut buf[..written],
+        )
+        .await
+        .unwrap();
         beacon_interval.next().await;
     }
 }
-fn dump_command(wifi: &WiFi, uart0_tx: &mut impl embedded_io::Write) {
+fn dump_command(wifi: &mut WiFi, uart0_tx: &mut impl embedded_io::Write) {
     let _ = writeln!(uart0_tx, "Current channel: {}", wifi.get_channel());
     #[cfg(feature = "esp32")]
-{
-    extern "C" {
-        fn ram_phy_get_noisefloor() -> i32;
+    {
+        unsafe extern "C" {
+            fn ram_phy_get_noisefloor() -> i32;
+        }
+        let nf_qdbm = unsafe { ram_phy_get_noisefloor() };
+        let decimal_nf = (nf_qdbm & 0b11) * 25;
+        let integer_nf = (nf_qdbm & !0b11) / 4;
+        let _ = writeln!(uart0_tx, "Noise floor: {integer_nf}.{decimal_nf} dBm");
     }
-    let nf_qdbm = unsafe {
-        ram_phy_get_noisefloor()
-    };
-    let decimal_nf = (nf_qdbm & 0b11) * 25;
-    let integer_nf = (nf_qdbm & !0b11) / 4;
-    let _ = writeln!(uart0_tx, "Noise floor: {integer_nf}.{decimal_nf} dBm");
-    }
+    wifi.log_dma_list_stats();
 }
 fn parse_mac(mac_str: &str) -> Option<MACAddress> {
     let mut mac = [0x00u8; 6];
@@ -275,19 +279,19 @@ fn parse_interface(
             let _ = writeln!(
                 uart0_tx,
                 "Expected argument [interface], valid banks are 0-{}",
-                WiFi::INTERFACE_COUNT
+                INTERFACE_COUNT
             );
             None
         }
     }
 }
 fn filter_command<'a>(
-    wifi: &WiFi,
+    wifi: &mut WiFi,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
     let bank = match args.next() {
-        Some("BSSID") => RxFilterBank::BSSID,
+        Some("BSSID") => RxFilterBank::Bssid,
         Some("RA") => RxFilterBank::ReceiverAddress,
         _ => {
             let _ = writeln!(
@@ -310,30 +314,36 @@ fn filter_command<'a>(
                 let _ = writeln!(uart0_tx, "The provided MAC address was invalid.");
                 return;
             };
-            let _ = wifi.set_filter(bank, interface, *mac_address, *BROADCAST);
+            let _ = wifi.set_filter(interface, bank, *mac_address);
         }
-        Some("enable") => {
-            let _ = wifi.set_filter_status(bank, interface, true);
-        }
-        Some("disable") => {
-            let _ = wifi.set_filter_status(bank, interface, false);
+        Some("clear") => {
+            let _ = wifi.clear_filter(interface, bank);
         }
         None => {
-            let _ = writeln!(
-                uart0_tx,
-                "Missing operand, valid operands are: set,enable,disable"
-            );
+            let _ = writeln!(uart0_tx, "Missing operand, valid operands are: set,clear");
         }
         Some(operand) => {
             let _ = writeln!(
                 uart0_tx,
-                "Invalid operand {operand}, valid operands are: set,enable,disable"
+                "Invalid operand {operand}, valid operands are: set,clear"
             );
         }
     }
 }
-async fn sniff_command(wifi: &WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) {
+async fn sniff_command(
+    wifi: &mut WiFi<'_>,
+    uart0_tx: &mut impl embedded_io::Write,
+    mut args: impl Iterator<Item = &str> + '_,
+) {
     wifi.clear_rx_queue();
+    if args.next() == Some("all") {
+        unsafe {
+            wifi.ll_driver_ref()
+                .set_filtered_address_types(3, false, false);
+            wifi.ll_driver_ref()
+                .set_control_frame_filter(3, &ControlFrameFilterConfig::all());
+        }
+    }
     loop {
         let received = wifi.receive().await;
         let mut interfaces = [0; 4];
@@ -353,23 +363,26 @@ async fn sniff_command(wifi: &WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) 
         {
             // continue;
         }
+        let Some(phy_rate) = received.phy_rate() else {
+            continue;
+        };
         let _ = write!(
             uart0_tx,
-            "Type: {:?} RSSI: {}dBm RX state: {:02x} Interfaces: {:?} PHY Rate: {:?} Address 1: {}",
+            "Type: {:?} RSSI: {:03} dBm Airtime: {} ns Interfaces: {:?} PHY Rate: {:?} Mbit/s Address 1: {}",
             generic_frame.frame_control_field().frame_type(),
             received.rssi(),
-            received.rx_state(),
+            phy_rate.airtime(received.unpadded_buffer_len()),
             &interfaces[..if_count],
-            received.phy_rate(),
+            phy_rate.data_rate() / 1_000_000,
             generic_frame.address_1()
         );
         if let Some(address_2) = generic_frame.address_2() {
             let _ = write!(uart0_tx, " Address 2: {address_2}");
-        } else {
-            let _ = writeln!(uart0_tx,);
-        }
-        if let Some(address_3) = generic_frame.address_3() {
-            let _ = writeln!(uart0_tx, " Address 3: {address_3}");
+            if let Some(address_3) = generic_frame.address_3() {
+                let _ = writeln!(uart0_tx, " Address 3: {address_3}");
+            } else {
+                let _ = writeln!(uart0_tx,);
+            }
         } else {
             let _ = writeln!(uart0_tx,);
         }
@@ -377,7 +390,7 @@ async fn sniff_command(wifi: &WiFi<'_>, uart0_tx: &mut impl embedded_io::Write) 
     }
 }
 fn scanning_mode_command<'a>(
-    wifi: &WiFi,
+    wifi: &mut WiFi,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -400,7 +413,7 @@ fn scanning_mode_command<'a>(
     let _ = wifi.set_scanning_mode(interface, scanning_mode);
 }
 async fn s_pol_command<'a>(
-    wifi: &WiFi<'_>,
+    _wifi: &mut WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
     mut args: impl Iterator<Item = &'a str> + 'a,
 ) {
@@ -424,12 +437,15 @@ async fn s_pol_command<'a>(
         let _ = writeln!(uart0_tx, "Couldn't parse RX policy.");
         return;
     };
+    let regs = unsafe { LowLevelDriver::regs() };
     let _ = writeln!(
         uart0_tx,
         "Previous RX policy: {:#08x}",
-       unsafe { wifi.read_rx_policy_raw(interface) }.unwrap()
+        regs.filter_control(interface).read().bits()
     );
-    let _ = unsafe { wifi.write_rx_policy_raw(interface, rx_policy) };
+    let _ = regs
+        .filter_control(interface)
+        .write(|w| unsafe { w.bits(rx_policy) });
     let _ = writeln!(uart0_tx, "New RX policy: {rx_policy:#08x}");
 }
 #[derive(PartialEq, Eq)]
@@ -482,6 +498,10 @@ fn m_mod<'a>(uart0_tx: &mut impl embedded_io::Write, mut args: impl Iterator<Ite
             let _ = writeln!(uart0_tx, "Invalid address.");
             return;
         };
+        if !address.is_multiple_of(4) {
+            let _ = writeln!(uart0_tx, "Unaligned load.");
+            return;
+        }
         address as *mut u32
     };
     let previous = unsafe { address.read_volatile() };
@@ -516,7 +536,7 @@ fn m_mod<'a>(uart0_tx: &mut impl embedded_io::Write, mut args: impl Iterator<Ite
     let _ = writeln!(uart0_tx, "{address:08x?}:{new_value:08x}");
 }
 async fn run_command<'a>(
-    wifi: &WiFi<'_>,
+    wifi: &mut WiFi<'_>,
     uart0_tx: &mut impl embedded_io::Write,
     command: &str,
     args: impl Iterator<Item = &'a str> + 'a,
@@ -534,8 +554,8 @@ async fn run_command<'a>(
                 scan [all|beacons] [hop] - Look for available access points.\n\
                 beacon [SSID] <CHANNEL_NUMBER> - Transmit a beacon every 100 TUs.\n\
                 dump - Dump status information.\n\
-                filter [BSSID|RA] [0|1] [set|enable|disable] <FILTER_ADDRESS> - Set filter status.\n\
-                sniff - Logs frames with rough info.\n\
+                filter [BSSID|RA] [0-3] [set|clear] <FILTER_ADDRESS> - Set filter status.\n\
+                sniff [all] - Logs frames with rough info.\n\
                 scanning_mode INTERFACE [management_and_data|beacons_only|disabled] - Set the scanning mode.\n\
                 s_pol INTERFACE REGISTER_VALUE - Set the RX policy register for the given interface. \n\
                 m_mod [r|w|&|||x] ADDRESS_OR_OFFSET <VALUE> - Modify raw memory. If you prefix the address with an `r`, it will be treated as an offset relative to the Wi-Fi peripheral base.
@@ -557,7 +577,7 @@ async fn run_command<'a>(
         "filter" => {
             filter_command(wifi, uart0_tx, args);
         }
-        "sniff" => sniff_command(wifi, uart0_tx).await,
+        "sniff" => sniff_command(wifi, uart0_tx, args).await,
         "scanning_mode" => scanning_mode_command(wifi, uart0_tx, args),
         "s_pol" => s_pol_command(wifi, uart0_tx, args).await,
         "m_mod" => m_mod(uart0_tx, args),
@@ -581,8 +601,8 @@ async fn main(_spawner: Spawner) {
     heap_allocator!(size: 32 * 1024);
 
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     #[cfg(feature = "esp32")]
     let (rx_pin, tx_pin) = (peripherals.GPIO3, peripherals.GPIO1);
@@ -598,9 +618,9 @@ async fn main(_spawner: Spawner) {
     .with_tx(tx_pin)
     .into_async()
     .split();
+    let _ = writeln!(&mut uart0_tx, "READY");
 
     let _ = uart0_tx.flush_async().await;
-    let _ = writeln!(&mut uart0_tx, "READY");
     loop {
         let _ = write!(&mut uart0_tx, "> ");
         let mut buf = [0x00u8; 0xff];
@@ -648,7 +668,7 @@ async fn main(_spawner: Spawner) {
         };
         select(
             wait_for_quit(&mut uart0_rx),
-            run_command(&wifi, &mut uart0_tx, cmd, cmd_with_args),
+            run_command(&mut wifi, &mut uart0_tx, cmd, cmd_with_args),
         )
         .await;
     }

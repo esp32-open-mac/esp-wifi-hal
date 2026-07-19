@@ -1,18 +1,11 @@
-//! This tests, whether the timeout parameter actually configures the ACK timeout, by transmitting
-//! an ACK in software well after one SIFS, so the default value would cause an ACK timeout.
-//! SPOILER: It does...
 #![no_std]
 #![no_main]
-
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
 use esp_wifi_hal::prelude::*;
-use examples::{
-    AP_ADDRESS, STA_ADDRESS, common_init, embassy_init, get_test_channel, mk_static, setup_filters,
-    wifi_init,
-};
-use ieee80211::{data_frame::builder::DataFrameBuilder, scroll::Pwrite};
+use examples::{AP_ADDRESS, common_init, embassy_init, mk_static, wifi_init};
+use ieee80211::{data_frame::builder::DataFrameBuilder, mac_parser::BROADCAST, scroll::Pwrite};
 use log::info;
 
 #[esp_rtos::main]
@@ -20,18 +13,14 @@ async fn main(_spawner: Spawner) {
     let peripherals = common_init();
     embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
     let mut wifi = wifi_init(peripherals.WIFI);
-
-    let _ = wifi.set_channel(get_test_channel());
-    setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
-
-    let buf = mk_static!([u8; 1600], [0x00u8; 1600]);
+    let buf = mk_static!([u8; 300], [0x00u8; 300]);
     let written = buf
         .pwrite(
             DataFrameBuilder::new()
                 .from_ds()
                 .category_data()
                 .payload([0x69u8; 5].as_slice())
-                .destination_address(STA_ADDRESS.into())
+                .destination_address(BROADCAST)
                 .source_address(AP_ADDRESS.into())
                 .bssid(AP_ADDRESS.into())
                 .build(),
@@ -42,23 +31,22 @@ async fn main(_spawner: Spawner) {
         let res = wifi
             .transmit(
                 0,
-                &TxPlcpParameters {
-                    rate: HrDsssRate::new(2, false).unwrap().into(),
-                    ..Default::default()
-                },
+                &TxPlcpParameters::default(),
                 &TxMacParameters {
                     wait_for_ack: true,
+                    override_seq_num: true,
                     ..Default::default()
                 },
-                TxErrorBehaviour::RetryUntil(7),
-                EdcaAccessCategory::Video.into(),
+                TxErrorBehaviour::Drop,
+                HardwareTxQueue::Edcaf(EdcaAccessCategory::Voice),
                 &mut buf[..written],
             )
             .await;
-        if let Err(err) = res {
-            info!("TX error: {err:?}");
-        } else {
-            info!("Ack arrived in time.");
+        match res {
+            Ok(_) => info!("TX success"),
+            Err(TxError::ChannelAccess(ChannelAccessError::Timeout)) => info!("TX timeout"),
+            Err(TxError::ChannelAccess(ChannelAccessError::Collision)) => info!("TX collision"),
+            err => info!("{err:?}"),
         }
         Timer::after_millis(500).await;
         wifi.clear_rx_queue();

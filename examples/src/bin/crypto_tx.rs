@@ -3,15 +3,15 @@
 use embassy_executor::Spawner;
 use embassy_time::Timer;
 use esp_backtrace as _;
-use esp_wifi_hal::{KeyType, TxErrorBehaviour, TxParameters};
+use esp_wifi_hal::prelude::*;
 use examples::{
-    common_init, embassy_init, get_test_channel, insert_key, setup_filters, wifi_init, AP_ADDRESS,
-    GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS,
+    AP_ADDRESS, GTK, GTK_KEY_SLOT, PTK, PTK_KEY_SLOT, STA_ADDRESS, common_init, embassy_init,
+    get_test_channel, insert_key, setup_filters, wifi_init,
 };
 
 use ieee80211::{
     crypto::{CryptoHeader, MicState},
-    data_frame::{builder::DataFrameBuilder, DataFrame},
+    data_frame::{DataFrame, builder::DataFrameBuilder},
     mac_parser::MACAddress,
     scroll::Pwrite,
 };
@@ -41,15 +41,21 @@ const PAIRWISE_TEMPLATE: DataFrame<'static, &[u8]> = DataFrameBuilder::new()
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     info!("TX");
     let _ = wifi.set_channel(get_test_channel());
-    setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
+    setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
 
-    insert_key(&wifi, &GTK, KeyType::Group, AP_ADDRESS, GTK_KEY_SLOT);
-    insert_key(&wifi, &PTK, KeyType::Pairwise, STA_ADDRESS, PTK_KEY_SLOT);
+    insert_key(&mut wifi, &GTK, KeyType::Group, AP_ADDRESS, GTK_KEY_SLOT);
+    insert_key(
+        &mut wifi,
+        &PTK,
+        KeyType::Pairwise,
+        STA_ADDRESS,
+        PTK_KEY_SLOT,
+    );
 
     for pn in 0.. {
         let (frame, key_slot) = if pn % 2 == 0 {
@@ -61,15 +67,17 @@ async fn main(_spawner: Spawner) {
         let mut buf = [0x00u8; 300];
         let len = buf.pwrite(frame, 0).unwrap();
         let _ = wifi
-            .transmit(
-                &mut buf[..len],
-                &TxParameters {
-                    key_slot: Some(key_slot),
-                    tx_error_behaviour: TxErrorBehaviour::Drop,
+            .transmit_oneshot(
+                0,
+                &TxPlcpParameters::default(),
+                &TxMacParameters {
+                    wait_for_ack: true,
                     override_seq_num: true,
+                    key_slot_index: Some(key_slot as u8),
                     ..Default::default()
                 },
-                Some(0),
+                EdcaAccessCategory::DEFAULT_MANAGEMENT_QUEUE,
+                &mut buf[..len],
             )
             .await;
         Timer::after_secs(1).await;

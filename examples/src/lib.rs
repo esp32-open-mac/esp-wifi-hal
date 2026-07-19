@@ -2,13 +2,11 @@
 #![no_std]
 
 use esp_hal::{
-    peripherals::{Peripherals, ADC2, TIMG0, WIFI},
+    interrupt::software::SoftwareInterruptControl,
+    peripherals::{Peripherals, SW_INTERRUPT, TIMG0, WIFI},
     timer::timg::TimerGroup,
 };
-use esp_wifi_hal::{
-    AesCipherParameters, CipherParameters, KeyType, MultiLengthKey, RxFilterBank, WiFi,
-    WiFiResources,
-};
+use esp_wifi_hal::prelude::*;
 use ieee80211::mac_parser::MACAddress;
 use log::info;
 use static_cell::StaticCell;
@@ -40,15 +38,13 @@ pub fn print_key<'buf>(key: &[u8; 16], buf: &'buf mut [u8; 32]) -> &'buf str {
     core::str::from_utf8(buf.as_slice()).unwrap()
 }
 /// Utility to set and enable the filters.
-pub fn setup_filters(wifi: &WiFi, ra: [u8; 6], bssid: [u8; 6]) {
-    let _ = wifi.set_filter(RxFilterBank::ReceiverAddress, 0, ra, [0xff; 6]);
-    let _ = wifi.set_filter(RxFilterBank::BSSID, 0, bssid, [0xff; 6]);
-    let _ = wifi.set_filter_status(RxFilterBank::ReceiverAddress, 0, true);
-    let _ = wifi.set_filter_status(RxFilterBank::BSSID, 0, true);
+pub fn setup_filters(wifi: &mut WiFi, ra: [u8; 6], bssid: [u8; 6]) {
+    let _ = wifi.set_filter(0, RxFilterBank::ReceiverAddress, ra);
+    let _ = wifi.set_filter(0, RxFilterBank::Bssid, bssid);
 }
 /// Utility to set a key, with some basic parameters.
 pub fn insert_key(
-    wifi: &WiFi,
+    wifi: &mut WiFi,
     key: &[u8; 16],
     key_type: KeyType,
     address: [u8; 6],
@@ -81,11 +77,22 @@ pub fn common_init() -> Peripherals {
 
     peripherals
 }
-pub fn embassy_init(timg0: TIMG0<'static>) {
+pub fn embassy_init(timg0: TIMG0<'static>, sw_interrupt: SW_INTERRUPT<'static>) {
     let timg0 = TimerGroup::<'static>::new(timg0);
-    esp_rtos::start(timg0.timer0);
+    let sw_interrupt_control = SoftwareInterruptControl::new(sw_interrupt);
+    esp_rtos::start(timg0.timer0, sw_interrupt_control.software_interrupt0);
 }
-pub fn wifi_init<'a>(wifi: WIFI<'a>, adc2: ADC2<'a>) -> WiFi<'a> {
+pub fn wifi_init<'a>(wifi: WIFI<'a>) -> WiFi<'a> {
     static WIFI_RESOURCES: StaticCell<WiFiResources<10>> = StaticCell::new();
-    WiFi::new(wifi, adc2, WIFI_RESOURCES.init(WiFiResources::new()))
+    WiFi::new(wifi, WIFI_RESOURCES.init(WiFiResources::new()))
+}
+
+#[macro_export]
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.init_with(|| ($val));
+        x
+    }};
 }

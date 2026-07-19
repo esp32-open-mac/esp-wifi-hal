@@ -181,6 +181,13 @@ impl BorrowedBuffer<'_> {
     pub fn rx_state(&self) -> u8 {
         self.header_buffer()[Self::RX_CONTROL_HEADER_LENGTH - 1]
     }
+    /// Check if the contained MPDU is a fragment.
+    pub fn is_fragment(&self) -> bool {
+        self.raw_buffer()
+            .get(Self::RX_CONTROL_HEADER_LENGTH + 1)
+            .map(|byte| byte & 4 != 0)
+            .unwrap_or_default()
+    }
 }
 impl Drop for BorrowedBuffer<'_> {
     fn drop(&mut self) {

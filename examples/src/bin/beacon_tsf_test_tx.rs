@@ -6,14 +6,14 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Ticker};
 use esp_backtrace as _;
 use esp_rtos::main;
-use esp_wifi_hal::{RxFilterBank, TxParameters, WiFiRate};
-use examples::{common_init, embassy_init, setup_filters, wifi_init, AP_ADDRESS};
+use esp_wifi_hal::prelude::*;
+use examples::{AP_ADDRESS, common_init, embassy_init, setup_filters, wifi_init};
 use ieee80211::{
     common::{CapabilitiesInformation, SequenceControl, TU},
     element_chain,
     elements::VendorSpecificElement,
     mac_parser::BROADCAST,
-    mgmt_frame::{body::BeaconBody, BeaconFrame, ManagementFrameHeader},
+    mgmt_frame::{BeaconFrame, ManagementFrameHeader, body::BeaconBody},
     scroll::Pwrite,
     ssid,
 };
@@ -23,8 +23,8 @@ const SSID: &str = "BEACON TSF HIL TEST";
 #[main]
 async fn main(_spawner: Spawner) {
     let peripherals = common_init();
-    embassy_init(peripherals.TIMG0);
-    let wifi = wifi_init(peripherals.WIFI, peripherals.ADC2);
+    embassy_init(peripherals.TIMG0, peripherals.SW_INTERRUPT);
+    let mut wifi = wifi_init(peripherals.WIFI);
 
     let mut beacon_ticker = Ticker::every(Duration::from_micros(TU.as_micros() as u64 * 100));
     let mut buffer = [0u8; 300];
@@ -34,7 +34,7 @@ async fn main(_spawner: Spawner) {
     }
     loop {
         for interface in 0..4 {
-            setup_filters(&wifi, AP_ADDRESS, AP_ADDRESS);
+            setup_filters(&mut wifi, AP_ADDRESS, AP_ADDRESS);
 
             let vendor_body = [interface as u8];
             let frame = BeaconFrame {
@@ -57,19 +57,20 @@ async fn main(_spawner: Spawner) {
                 },
             };
             let written = buffer.pwrite(frame, 0).unwrap();
-            wifi.transmit(
-                &mut buffer[..written],
-                &TxParameters {
-                    rate: WiFiRate::PhyRate1ML,
+            wifi.transmit_oneshot(
+                0,
+                &TxPlcpParameters::default(),
+                &TxMacParameters {
                     override_seq_num: true,
                     ..Default::default()
                 },
-                None,
+                HardwareTxQueue::Beacon,
+                &mut buffer[..written],
             )
             .await
             .unwrap();
             beacon_ticker.next().await;
-            let _ = wifi.set_filter_status(RxFilterBank::BSSID, interface, false);
+            wifi.clear_filter(0, RxFilterBank::Bssid).unwrap();
         }
     }
 }

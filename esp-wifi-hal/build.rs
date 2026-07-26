@@ -5,8 +5,8 @@ const PWR_INTERRUPT_PRESENT: &str = "pwr_interrupt_present";
 const OSI_FUNCS_REQUIRED: &str = "osi_funcs_required";
 const NOMAC_CHANNEL_SET: &str = "nomac_channel_set";
 
-const ESP32_META: &[&str] = &[NOMAC_CHANNEL_SET];
-const ESP32S2_META: &[&str] = &[PWR_INTERRUPT_PRESENT, OSI_FUNCS_REQUIRED];
+const ESP32_META: &[&str] = &["esp32", NOMAC_CHANNEL_SET];
+const ESP32S2_META: &[&str] = &["esp32s2", PWR_INTERRUPT_PRESENT, OSI_FUNCS_REQUIRED];
 
 fn main() {
     let meta = if cfg!(feature = "esp32") {

@@ -548,7 +548,7 @@ pub struct TxPlcpParameters {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Parameters to override Enhance Distributed Channel Access (EDCA) defaults.
-pub struct OverrideEdcaParameters {
+pub struct EdcaParameters {
     /// Range of allowed contention window exponents.
     ///
     /// The default is `4..=10`, which is equal to a minimum CW of 15 and a maximum of 1023.
@@ -596,7 +596,9 @@ pub struct TxMacParameters {
     /// NOTE: This will change the buffer!
     pub override_seq_num: bool,
     /// Parameters for Enhance Distributed Channel Access (EDCA).
-    pub override_edca_parameters: OverrideEdcaParameters,
+    ///
+    /// Under normal circumstances, you should never have to deviate from the default here.
+    pub edca_parameters: EdcaParameters,
     /// Requires using `..Default::default()` initialization, to ensure future backwards
     /// compatibility.
     pub _ne: NonExhaustive,
@@ -698,7 +700,7 @@ pub enum TxError {
     OutOfBounds,
     /// The provided EDCA parameters were invalid.
     ///
-    /// Currently this only happens, if [OverrideEdcaParameters::contention_window_exponent_range] is empty.
+    /// Currently this only happens, if [EdcaParameters::contention_window_exponent_range] is empty.
     InvalidEdcaParameters,
 }
 /// The current sequence number tracked by the driver.
@@ -935,13 +937,13 @@ mod private {
             Self::prepare_dma_descriptor_for_tx(mpdu_buf, dma_descriptor.deref_mut());
 
             let aifsn = mac_parameters
-                .override_edca_parameters
+                .edca_parameters
                 .aifsn
                 .unwrap_or(queue.default_aifsn()) as usize;
             let backoff_slots = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
                 EdcaContentionState::new(
                     mac_parameters
-                        .override_edca_parameters
+                        .edca_parameters
                         .contention_window_exponent_range
                         .clone()
                         .unwrap_or(edca_ac.default_cw_exponent_range()),
@@ -952,7 +954,7 @@ mod private {
             };
             let duration_and_backoff_slots = backoff_slots
                 .ok_or(TxError::InvalidEdcaParameters)
-                .map(|backoff_slots| {
+                .and_then(|backoff_slots| {
                     duration_and_is_unicast.map(|extracted_parameters| {
                         (
                             extracted_parameters,
@@ -962,8 +964,7 @@ mod private {
                             },
                         )
                     })
-                })
-                .flatten();
+                });
 
             self.transmit_raw(
                 interface,
@@ -999,7 +1000,7 @@ mod private {
             let mut edca_contention_state = if let HardwareTxQueue::Edcaf(edca_ac) = queue {
                 EdcaContentionState::new(
                     mac_parameters
-                        .override_edca_parameters
+                        .edca_parameters
                         .contention_window_exponent_range
                         .clone()
                         .unwrap_or(edca_ac.default_cw_exponent_range()),
@@ -1009,7 +1010,7 @@ mod private {
             };
 
             let aifsn = mac_parameters
-                .override_edca_parameters
+                .edca_parameters
                 .aifsn
                 .unwrap_or(queue.default_aifsn()) as usize;
 
@@ -1043,17 +1044,17 @@ mod private {
                 match last_res {
                     Ok(_) => break,
                     Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => {
-                        edca_contention_state.as_mut().map(|contention_state| {
+                        if let Some(ref mut contention_state) = edca_contention_state {
                             trace!("Incremented LRC");
                             contention_state.increment_lrc();
                             contention_state.reset_src();
-                        });
+                        }
                     }
                     Err(TxError::MacProtocol(_)) => {
-                        edca_contention_state.as_mut().map(|contention_state| {
+                        if let Some(ref mut contention_state) = edca_contention_state {
                             trace!("Incremented SRC");
                             contention_state.increment_src();
-                        });
+                        }
                     }
                     _ => {}
                 }

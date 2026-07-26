@@ -556,6 +556,19 @@ pub struct OverrideEdcaParameters {
     /// Override the queue default AIFSN.
     pub aifsn: Option<u8>,
 }
+
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+/// How to handle RTS
+pub enum RtsStrategy {
+    #[default]
+    /// The driver decides when to use RTS/CTS.
+    ///
+    /// Effectively, RTS/CTS get used for unicast frames only.
+    DriverControlled,
+    /// Forcefully enable or disable RTS/CTS.
+    Forced(bool),
+}
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 /// Parameters for the MAC.
@@ -571,10 +584,14 @@ pub struct TxMacParameters {
     ///
     /// The ACK is expected to be addressed to the interface specified during transmission.
     pub wait_for_ack: bool,
+    /// How to handle RTS/CTS protection.
+    ///
+    /// Usually you do not have to touch this.
+    pub rts_strategy: RtsStrategy,
     /// Should the sequence number be replaced, with one tracked by the driver.
     ///
     /// Usually you want this to be enabled, however it's not the default, as it may not be the
-    /// expected behaviour for the driver to change your frames.
+    /// expected behaviour for the driver to change your buffers.
     ///
     /// NOTE: This will change the buffer!
     pub override_seq_num: bool,
@@ -699,7 +716,7 @@ mod private {
         DefaultRawMutex,
         async_driver::{
             CURRENT_SEQUENCE_NUMBER, FRAMES_SINCE_LAST_TXPWR_CTRL, HARDWARE_TX_RESULT_SIGNALS,
-            HasLowLevelDriver, TxError, TxMacParameters, TxPlcpParameters, WiFi,
+            HasLowLevelDriver, RtsStrategy, TxError, TxMacParameters, TxPlcpParameters, WiFi,
         },
         dma_list::DmaList,
         edca::EdcaContentionState,
@@ -731,6 +748,7 @@ mod private {
     }
     /// Extends the low level driver with the asynchronous transmission system.
     pub trait AsyncTransmitExt: HasLowLevelDriver {
+        #[allow(clippy::too_many_arguments)]
         /// Sets up a frame for transmission.
         fn setup_tx(
             &self,
@@ -752,6 +770,13 @@ mod private {
             //    HE and VHT.)
             let ll_driver = unsafe { self.ll_driver_ref() };
 
+            let rts_enabled = if let RtsStrategy::Forced(rts_enabled) = mac_parameters.rts_strategy
+            {
+                rts_enabled
+            } else {
+                extracted_parameters.is_unicast
+            };
+
             ll_driver.set_channel_access_parameters(
                 queue,
                 10,
@@ -762,7 +787,7 @@ mod private {
                 queue,
                 dma_descriptor,
                 mac_parameters.wait_for_ack,
-                extracted_parameters.is_unicast,
+                rts_enabled,
             );
             ll_driver.set_plcp1(
                 queue,
@@ -950,7 +975,6 @@ mod private {
             )
         }
         #[allow(clippy::too_many_arguments)]
-        #[inline(never)]
         /// Transmit a frame and correctly handle errors.
         ///
         /// This will also read the duration from the buffer and configure the hardware with it.

@@ -15,7 +15,16 @@ To try one of these examples:
 3. `cd examples`
 4. Run `cargo run -r --bin [EXAMPLE_NAME_GOES_HERE]`
 ## Technical Notes
-The ESP32 WiFi peripheral has five TX slots, which we number 0-4. The MMIO addresses, where these are configured are in reverse order. This means, that slot zero starts at the HIGHEST address and slot four at the lowest. This numbering is also suggested by the TX status registers. We could in theory reverse this ordering to ascending addresses, this would however cause headaches with TX slot status handling, so we chose to stick with descending addresses. This is also the way the proprietary task handles this.
+The ESP32 WiFi peripheral has five TX slots, which we number 0-4. The MMIO addresses, where these are configured are in reverse order. This means, that slot zero starts at the HIGHEST address and slot four at the lowest. This numbering is also suggested by the TX status registers. We could in theory reverse this ordering to ascending addresses, this would however cause headaches with TX slot status handling, so we chose to stick with descending addresses. This is also the way the proprietary stack handles this.
 
-We have reason to believe, that slot four is in some way special, as the TX completion handler in the proprietary task masks away the bit corresponding to that slot (See `hal_mac_get_txq_state`). However, as our tests do not indicate any special behaviour, we just use it like a normal slot.
+Each TX slot is a hardware transmit queue, four of which directly map to IEEE 802.11 access categories (ACs). The exact mapping is provided in the following table.
 
+Slot | Queue | AC index
+-- | -- | --
+0 | Beacon | N/A 
+1 | Background | 1
+2 | Best Effort | 0
+3 | Video | 2 
+4 | Voice | 3
+
+We have no idea, why they didn't just stick with the AC index order for the slots...

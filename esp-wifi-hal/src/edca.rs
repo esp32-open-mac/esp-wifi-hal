@@ -30,11 +30,13 @@ impl EdcaContentionState {
     }
     /// Increase the contention window forward.
     fn advance_contention_window(&mut self) {
+        // Shift left by one and set the lowest bit.
         self.current_cw <<= 1;
         self.current_cw += 1;
+        // Clamp the CW to the end of the range.
         self.current_cw = self
             .current_cw
-            .max((1 << *self.contention_window_exponent_range.end() as usize) - 1);
+            .min((1 << *self.contention_window_exponent_range.end() as usize) - 1);
     }
     /// Increment the short retry count.
     pub fn increment_src(&mut self) {

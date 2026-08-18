@@ -1076,6 +1076,25 @@ mod private {
     }
     impl AsyncTransmitExt for LowLevelDriver {}
 }
+fn is_rx_frame_valid(dma_descriptor: &mut DmaDescriptor) -> bool {
+    // Just to be safe.
+    let length_valid = RX_BUFFER_SIZE >= dma_descriptor.len();
+    // Sometimes the received buffer is length zero, so we check that there's room for the RX header.
+    let has_phy_header = dma_descriptor.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
+
+    // SAFETY: We validated, that the length can't be larger, than the pre allocated size for the buffer.
+    let buffer =
+        unsafe { core::slice::from_raw_parts(dma_descriptor.buffer, dma_descriptor.len()) };
+
+    let field_0x18 = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) as usize;
+    // NOTE: These names are a lot more on the side of guesses, than other names here.
+    let l_sig_len = field_0x18 & 0xfff;
+    let ht_sig_len = (field_0x18 >> 0xc) & 0xfff;
+
+    let length_fields_valid = l_sig_len < dma_descriptor.len() && ht_sig_len < dma_descriptor.len();
+
+    length_valid && has_phy_header && length_fields_valid
+}
 /// A trait implemented by structs, that allow asynchronously receiving frames.
 pub trait AsyncReceive<'res>: HasDmaList<'res> {
     /// Receive a frame.
@@ -1089,15 +1108,20 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
             // Sometimes the DMA list descriptors don't contain any data, even though the hardware indicated reception.
             // We loop until we get something.
             let dma_list_item = loop {
-                WIFI_RX_SIGNAL_QUEUE.next().await;
                 if let Some(current) = self
                     .dma_list_ref()
                     .lock(|dma_list| dma_list.borrow_mut().take_first())
-                    && current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH
                 {
-                    trace!("Received packet. len: {}", current.len());
-                    break current;
+                    if is_rx_frame_valid(current) {
+                        trace!("Received packet. len: {}", current.len());
+                        break current;
+                    } else {
+                        trace!("Discarding frame due to invalid header.");
+                        self.dma_list_ref()
+                            .lock(|dma_list| dma_list.borrow_mut().recycle(current));
+                    }
                 }
+                WIFI_RX_SIGNAL_QUEUE.next().await;
                 trace!("Received empty packet.");
             };
 

@@ -130,7 +130,8 @@ impl DmaDescriptorExt for DmaDescriptor {
     }
 }
 
-const RX_BUFFER_SIZE: usize = 1600;
+/// The size of one RX buffer.
+pub const RX_BUFFER_SIZE: usize = 1600;
 
 /// Resources for the Wi-Fi peripheral.
 ///

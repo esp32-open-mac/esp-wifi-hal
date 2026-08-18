@@ -1,18 +1,11 @@
 use core::{
-    cell::RefCell,
-    mem::forget,
-    ops::Deref,
-    pin::{pin, Pin},
+    cell::RefCell, future::Future, mem::forget, ops::Deref, pin::{Pin, pin},
 };
 use esp_phy::{PhyController, PhyInitGuard};
 use portable_atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 
 use crate::{
-    esp_pac::wifi::TX_SLOT_CONFIG,
-    ll,
-    rates::RATE_LUT,
-    sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
-    CipherParameters, WiFiRate,
+    CipherParameters, WiFiRate, dma_list::RX_BUFFER_SIZE, esp_pac::wifi::TX_SLOT_CONFIG, ll, rates::RATE_LUT, sync::{BorrowedTxSlot, TxSlotQueue, TxSlotStatus},
 };
 use embassy_sync::blocking_mutex::{self};
 use esp_hal::{
@@ -509,29 +502,58 @@ impl<'res> WiFi<'res> {
             .lock(|rx_dma_list| rx_dma_list.borrow_mut().clear());
         WIFI_RX_SIGNAL_QUEUE.reset();
     }
+    fn is_rx_frame_valid(dma_descriptor: &mut DmaDescriptor) -> bool {
+        // Just to be safe.
+        let length_valid = RX_BUFFER_SIZE >= dma_descriptor.len();
+        // Sometimes the received buffer is length zero, so we check that there's room for the RX header.
+        let has_phy_header = dma_descriptor.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
+
+        // SAFETY: We validated, that the length can't be larger, than the pre allocated size for the buffer.
+        let buffer =
+            unsafe { core::slice::from_raw_parts(dma_descriptor.buffer, dma_descriptor.len()) };
+
+        let field_0x18 = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) as usize;
+        // NOTE: These names are a lot more on the side of guesses, than other names here.
+        let l_sig_len = field_0x18 & 0xfff;
+        let ht_sig_len = (field_0x18 >> 0xc) & 0xfff;
+
+        let length_fields_valid =
+            l_sig_len < dma_descriptor.len() && ht_sig_len < dma_descriptor.len();
+
+        length_valid && has_phy_header && length_fields_valid
+    }
     /// Receive a frame.
     ///
+    /// Since this always returns a buffer, it will block until one is available. This includes, if
+    /// RX is stopped.
+    ///
     /// NOTE: The received frame will not contain an FCS or MIC.
-    pub async fn receive(&self) -> BorrowedBuffer<'res> {
-        // Sometimes the DMA list descriptors don't contain any data, even though the hardware indicated reception.
-        // We loop until we get something.
-        let dma_list_item = loop {
-            WIFI_RX_SIGNAL_QUEUE.next().await;
-            if let Some(current) = self
-                .dma_list
-                .lock(|dma_list| dma_list.borrow_mut().take_first())
-            {
-                if current.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
-                    trace!("Received packet. len: {}", current.len());
-                    break current;
+    pub fn receive(&self) -> impl Future<Output = BorrowedBuffer<'res>> {
+        async {
+            // Sometimes the DMA list descriptors don't contain any data, even though the hardware indicated reception.
+            // We loop until we get something.
+            let dma_list_item = loop {
+                if let Some(current) = self
+                    .dma_list
+                    .lock(|dma_list| dma_list.borrow_mut().take_first())
+                {
+                    if Self::is_rx_frame_valid(current) {
+                        trace!("Received packet. len: {}", current.len());
+                        break current;
+                    } else {
+                        trace!("Discarding frame due to invalid header.");
+                        self.dma_list
+                            .lock(|dma_list| dma_list.borrow_mut().recycle(current));
+                    }
                 }
-            }
-            trace!("Received empty packet.");
-        };
+                WIFI_RX_SIGNAL_QUEUE.next().await;
+                trace!("Received empty packet.");
+            };
 
-        BorrowedBuffer {
-            dma_list: self.dma_list,
-            dma_descriptor: dma_list_item,
+            BorrowedBuffer {
+                dma_list: self.dma_list,
+                dma_descriptor: dma_list_item,
+            }
         }
     }
     /// Set the packet for transmission.

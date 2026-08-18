@@ -843,7 +843,7 @@ dependencies = [
 
 [[package]]
 name = "esp-wifi-hal"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "bitfield-struct 0.12.1",
  "cfg-if",

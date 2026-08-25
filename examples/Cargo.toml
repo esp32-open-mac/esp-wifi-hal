@@ -19,7 +19,6 @@ esp-backtrace = { version = "0.18.1", features = ["panic-handler", "println"] }
 # Misc
 log = "0.4.28"
 static_cell = { version = "2.1.1" }
-ieee80211 = { path = "../../../rust/ieee80211/" }
 embedded-io-async = "0.7.0"
 embassy-futures = "0.1.2"
 embassy-executor = "0.10.0"
@@ -30,6 +29,7 @@ embedded-io = "0.7.1"
 esp-rtos = { version = "0.3.0", features = ["embassy"] }
 esp-println = { version = "0.16.1", features = ["log-04"] }
 esp-bootloader-esp-idf = "0.5.0"
+ieee80211 = "0.5.9"
 
 [features]
 esp32 = [

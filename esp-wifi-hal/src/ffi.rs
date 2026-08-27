@@ -129,7 +129,7 @@ static g_osi_funcs_p: &crate::esp_wifi_sys::include::wifi_osi_funcs_t =
         #[cfg(any(
             esp32c3, esp32c2, esp32c5, esp32c6, esp32c61, esp32h2, esp32s3, esp32s2
         ))]
-        _slowclk_cal_get: None,
+        _slowclk_cal_get: Some(slowclk_cal_get),
         #[cfg(any(esp32, esp32s2))]
         _phy_common_clock_disable: None,
         #[cfg(any(esp32, esp32s2))]
@@ -185,6 +185,44 @@ unsafe extern "C" fn phy_exit_critical(level: u32) {
             level,
         ))
     };
+}
+
+/// **************************************************************************
+/// Name: esp_clk_slowclk_cal_get_wrapper
+///
+/// Description:
+///   Get the calibration value of RTC slow clock
+///
+/// Input Parameters:
+///   None
+///
+/// Returned Value:
+///   The calibration value obtained using rtc_clk_cal
+///
+/// *************************************************************************
+#[allow(unused)]
+pub unsafe extern "C" fn slowclk_cal_get() -> u32 {
+    trace!("slowclk_cal_get");
+
+    // TODO not hardcode this
+
+    #[cfg(esp32s2)]
+    return 44462;
+
+    #[cfg(esp32s3)]
+    return 44462;
+
+    #[cfg(esp32c3)]
+    return 28639;
+
+    #[cfg(esp32c2)]
+    return 28639;
+
+    #[cfg(any(esp32c6, esp32h2, esp32c5, esp32c61))]
+    return 0;
+
+    #[cfg(esp32)]
+    return 28639;
 }
 
 #[ram]

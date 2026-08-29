@@ -1,4 +1,4 @@
-use crate::{borrowed_buffer::BorrowedBuffer, ll::LowLevelDriver};
+use crate::ll::LowLevelDriver;
 use core::{mem::MaybeUninit, ptr::NonNull};
 
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
@@ -72,14 +72,6 @@ impl<const BUFFER_COUNT: usize, const BUFFER_SIZE: usize> DmaBufferSlab<BUFFER_C
     }
 }
 
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// The DMA list was empty, so RX could not be started.
-///
-/// Usually something weird is going on, if you want to start RX, but all buffers were taken out of
-/// the list and not returned.
-pub struct DmaListEmptyError;
-
 /// The receive DMA list.
 pub struct DmaList {
     rx_chain_ptrs: Option<(NonNull<DmaDescriptor>, NonNull<DmaDescriptor>)>,
@@ -92,7 +84,8 @@ impl DmaList {
         last_ptr: NonNull<DmaDescriptor>,
         ll_driver: &'static LowLevelDriver,
     ) -> Self {
-        ll_driver.start_rx(base_ptr);
+        ll_driver.set_base_rx_descriptor(base_ptr);
+        ll_driver.start_rx();
 
         trace!("Initialized DMA list.");
         Self {
@@ -208,12 +201,8 @@ impl DmaList {
     ///
     /// This is only necessary, if you previously explicitly stopped the queue with
     /// [Self::stop_rx].
-    pub fn restart_rx(&mut self) -> Result<(), DmaListEmptyError> {
-        self.rx_chain_ptrs
-            .map(|(base_ptr, _)| {
-                self.ll_driver.start_rx(base_ptr);
-            })
-            .ok_or(DmaListEmptyError)
+    pub fn restart_rx(&mut self) {
+        self.ll_driver.start_rx();
     }
     /// Stop receiving frames.
     ///

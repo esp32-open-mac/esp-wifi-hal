@@ -1,4 +1,4 @@
-use crate::{borrowed_buffer::BorrowedBuffer, ll::LowLevelDriver};
+use crate::ll::LowLevelDriver;
 use core::{mem::MaybeUninit, ptr::NonNull};
 
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
@@ -72,14 +72,6 @@ impl<const BUFFER_COUNT: usize, const BUFFER_SIZE: usize> DmaBufferSlab<BUFFER_C
     }
 }
 
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// The DMA list was empty, so RX could not be started.
-///
-/// Usually something weird is going on, if you want to start RX, but all buffers were taken out of
-/// the list and not returned.
-pub struct DmaListEmptyError;
-
 /// The receive DMA list.
 pub struct DmaList {
     rx_chain_ptrs: Option<(NonNull<DmaDescriptor>, NonNull<DmaDescriptor>)>,
@@ -92,7 +84,8 @@ impl DmaList {
         last_ptr: NonNull<DmaDescriptor>,
         ll_driver: &'static LowLevelDriver,
     ) -> Self {
-        ll_driver.start_rx(base_ptr);
+        ll_driver.set_base_rx_descriptor(base_ptr);
+        ll_driver.start_rx();
 
         trace!("Initialized DMA list.");
         Self {
@@ -125,14 +118,14 @@ impl DmaList {
     /// Take the first [DMAListItem] out of the list.
     pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
-        trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
-        if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+        if first.flags.suc_eof() {
+            first.set_owner(Owner::Cpu);
             let next = first.next();
             if next.is_none() {
-                debug!("RX: Next DMA descriptor was none.");
+                trace!("RX DMA: list empty");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
-            first.set_owner(Owner::Cpu);
+            trace!("RX DMA: Took {:08x} from list", first as *mut _ as u32);
 
             Some(first)
         } else {
@@ -161,10 +154,6 @@ impl DmaList {
     /// Returns a [DMAListItem] to the end of the list.
     pub fn recycle(&mut self, dma_list_descriptor: &mut DmaDescriptor) {
         dma_list_descriptor.reset_for_rx();
-        trace!(
-            "Returned buffer: {:x} to DMA list.",
-            dma_list_descriptor as *mut _ as u32
-        );
 
         // If the DMA list is not empty, we attach the descriptor to the end, reload the hardware
         // descriptors and set the last pointer to the descriptor, under some weird conditions.
@@ -186,6 +175,10 @@ impl DmaList {
         }
         // If the DMA list is empty, we make this descriptor the base.
         self.set_rx_chain_base(NonNull::new(dma_list_descriptor));
+        trace!(
+            "RX DMA: Returned {:08x} to list.",
+            dma_list_descriptor as *mut _ as u32
+        );
     }
     /// Log the stats about the DMA list.
     pub fn log_stats(&self) {
@@ -201,19 +194,15 @@ impl DmaList {
                     .map(|non_null| non_null.as_ptr() as u32)
                     .unwrap_or_default(),
             );
-            info!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
+            info!("RX DMA: Stats: Next: {:x} Last: {:x}", rx_next, rx_last);
         }
     }
     /// Start receiving frames.
     ///
     /// This is only necessary, if you previously explicitly stopped the queue with
     /// [Self::stop_rx].
-    pub fn restart_rx(&mut self) -> Result<(), DmaListEmptyError> {
-        self.rx_chain_ptrs
-            .map(|(base_ptr, _)| {
-                self.ll_driver.start_rx(base_ptr);
-            })
-            .ok_or(DmaListEmptyError)
+    pub fn restart_rx(&mut self) {
+        self.ll_driver.start_rx();
     }
     /// Stop receiving frames.
     ///

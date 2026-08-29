@@ -827,8 +827,7 @@ impl LowLevelDriver {
     /// Start receiving frames.
     ///
     /// This will set the provided descriptor as the base of the RX DMA list and enable RX.
-    pub fn start_rx(&self, base_descriptor: NonNull<DmaDescriptor>) {
-        self.set_base_rx_descriptor(base_descriptor);
+    pub fn start_rx(&self) {
         unsafe {
             Self::set_rx_enable(true);
         }
@@ -1086,14 +1085,15 @@ impl LowLevelDriver {
         f: impl Fn(HardwareTxQueue),
     ) {
         let raw_status = unsafe { Self::raw_tx_status(tx_result) };
-        (0..5)
-            .filter(|i| check_bit!(raw_status, bit!(i)))
-            .for_each(|queue| {
-                // For some reason the slot numbering needs to be reversed when working with the
-                // interrupt cause register.
-                (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
-                unsafe { Self::clear_tx_slot_bit(tx_result, queue) };
-            });
+        for queue in 0..5 {
+            if !check_bit!(raw_status, bit!(queue)) {
+                continue;
+            }
+            // For some reason the slot numbering needs to be reversed when working with the
+            // interrupt cause register.
+            (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
+            unsafe { Self::clear_tx_slot_bit(tx_result, queue) };
+        }
     }
     #[inline]
     /// Configure the status of a TX slot.

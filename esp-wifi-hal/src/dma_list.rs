@@ -125,14 +125,14 @@ impl DmaList {
     /// Take the first [DMAListItem] out of the list.
     pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
-        if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+        if first.flags.suc_eof() {
+            first.set_owner(Owner::Cpu);
             let next = first.next();
             if next.is_none() {
                 trace!("RX DMA: list empty");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
             trace!("RX DMA: Took {:08x} from list", first as *mut _ as u32);
-            first.set_owner(Owner::Cpu);
 
             Some(first)
         } else {

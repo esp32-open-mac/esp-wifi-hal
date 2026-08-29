@@ -1077,23 +1077,30 @@ mod private {
     impl AsyncTransmitExt for LowLevelDriver {}
 }
 fn is_rx_frame_valid(dma_descriptor: &mut DmaDescriptor) -> bool {
+    let dma_len = dma_descriptor.len();
     // Just to be safe.
-    let length_valid = RX_BUFFER_SIZE >= dma_descriptor.len();
-    // Sometimes the received buffer is length zero, so we check that there's room for the RX header.
-    let has_phy_header = dma_descriptor.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
+    if RX_BUFFER_SIZE < dma_len
+        || !dma_descriptor.buffer.is_aligned()
+        || dma_len < BorrowedBuffer::RX_CONTROL_HEADER_LENGTH
+    {
+        return false;
+    }
 
-    // SAFETY: We validated, that the length can't be larger, than the pre allocated size for the buffer.
-    let buffer =
-        unsafe { core::slice::from_raw_parts(dma_descriptor.buffer, dma_descriptor.len()) };
+    // SAFETY: We validated, that the buffer has enough space for an RX header, and that the pointer aligned.
+    let raw_header = unsafe {
+        (dma_descriptor.buffer as *mut crate::esp_wifi_sys::include::wifi_pkt_rx_ctrl_t).as_ref()
+    };
+    if let Some(raw_header) = raw_header {
+        // This is ok, because the length of the MIC and FCS, which are removed by the HW, are shorter,
+        // than the RX control header.
+        if raw_header.sig_len() as usize >= dma_len {
+            return false;
+        }
+    } else {
+        return false;
+    }
 
-    let field_0x18 = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) as usize;
-    // NOTE: These names are a lot more on the side of guesses, than other names here.
-    let l_sig_len = field_0x18 & 0xfff;
-    let ht_sig_len = (field_0x18 >> 0xc) & 0xfff;
-
-    let length_fields_valid = l_sig_len < dma_descriptor.len() && ht_sig_len < dma_descriptor.len();
-
-    length_valid && has_phy_header && length_fields_valid
+    true
 }
 /// A trait implemented by structs, that allow asynchronously receiving frames.
 pub trait AsyncReceive<'res>: HasDmaList<'res> {

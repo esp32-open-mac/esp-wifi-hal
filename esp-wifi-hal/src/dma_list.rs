@@ -125,13 +125,13 @@ impl DmaList {
     /// Take the first [DMAListItem] out of the list.
     pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
-        trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
         if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
             let next = first.next();
             if next.is_none() {
-                debug!("RX: Next DMA descriptor was none.");
+                trace!("RX DMA: list empty");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
+            trace!("RX DMA: Took {:08x} from list", first as *mut _ as u32);
             first.set_owner(Owner::Cpu);
 
             Some(first)
@@ -161,10 +161,6 @@ impl DmaList {
     /// Returns a [DMAListItem] to the end of the list.
     pub fn recycle(&mut self, dma_list_descriptor: &mut DmaDescriptor) {
         dma_list_descriptor.reset_for_rx();
-        trace!(
-            "Returned buffer: {:x} to DMA list.",
-            dma_list_descriptor as *mut _ as u32
-        );
 
         // If the DMA list is not empty, we attach the descriptor to the end, reload the hardware
         // descriptors and set the last pointer to the descriptor, under some weird conditions.
@@ -186,6 +182,10 @@ impl DmaList {
         }
         // If the DMA list is empty, we make this descriptor the base.
         self.set_rx_chain_base(NonNull::new(dma_list_descriptor));
+        trace!(
+            "RX DMA: Returned {:08x} to list.",
+            dma_list_descriptor as *mut _ as u32
+        );
     }
     /// Log the stats about the DMA list.
     pub fn log_stats(&self) {
@@ -201,7 +201,7 @@ impl DmaList {
                     .map(|non_null| non_null.as_ptr() as u32)
                     .unwrap_or_default(),
             );
-            info!("DMA list: Next: {:x} Last: {:x}", rx_next, rx_last);
+            info!("RX DMA: Stats: Next: {:x} Last: {:x}", rx_next, rx_last);
         }
     }
     /// Start receiving frames.

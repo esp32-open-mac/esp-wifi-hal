@@ -1045,14 +1045,14 @@ mod private {
                     Ok(_) => break,
                     Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => {
                         if let Some(ref mut contention_state) = edca_contention_state {
-                            trace!("Incremented LRC");
+                            trace!("TX: Incremented LRC");
                             contention_state.increment_lrc();
                             contention_state.reset_src();
                         }
                     }
                     Err(TxError::MacProtocol(_)) => {
                         if let Some(ref mut contention_state) = edca_contention_state {
-                            trace!("Incremented SRC");
+                            trace!("TX: Incremented SRC");
                             contention_state.increment_src();
                         }
                     }
@@ -1063,7 +1063,7 @@ mod private {
                 *byte &= !bit!(3);
             }
             if last_res.is_err() {
-                trace!("Transmission of MPDU failed.");
+                trace!("TX: MPDU TX failed");
             }
             last_res
         }
@@ -1113,16 +1113,15 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                     .lock(|dma_list| dma_list.borrow_mut().take_first())
                 {
                     if is_rx_frame_valid(current) {
-                        trace!("Received packet. len: {}", current.len());
+                        trace!("RX: Received MPDU. DMA len {}", current.len());
                         break current;
                     } else {
-                        trace!("Discarding frame due to invalid header.");
+                        trace!("RX: Discarding presumably invalid frame.");
                         self.dma_list_ref()
                             .lock(|dma_list| dma_list.borrow_mut().recycle(current));
                     }
                 }
                 WIFI_RX_SIGNAL_QUEUE.next().await;
-                trace!("Received empty packet.");
             };
 
             BorrowedBuffer {

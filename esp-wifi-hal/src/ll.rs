@@ -827,8 +827,7 @@ impl LowLevelDriver {
     /// Start receiving frames.
     ///
     /// This will set the provided descriptor as the base of the RX DMA list and enable RX.
-    pub fn start_rx(&self, base_descriptor: NonNull<DmaDescriptor>) {
-        self.set_base_rx_descriptor(base_descriptor);
+    pub fn start_rx(&self) {
         unsafe {
             Self::set_rx_enable(true);
         }

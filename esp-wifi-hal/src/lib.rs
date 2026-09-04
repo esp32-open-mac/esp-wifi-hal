@@ -100,9 +100,11 @@ pub mod prelude {
     pub use crate::async_driver::*;
     pub use crate::borrowed_buffer::*;
     pub use crate::crypto::*;
+    #[cfg(feature = "unstable")]
+    pub use crate::ll::ControlFrameFilterConfig;
     pub use crate::ll::{
-        ChannelAccessError, ControlFrameFilterConfig, EdcaAccessCategory, HardwareTxQueue,
-        INTERFACE_COUNT, KEY_SLOT_COUNT, MacProtocolError, RxFilterBank,
+        ChannelAccessError, EdcaAccessCategory, HardwareTxQueue, INTERFACE_COUNT, KEY_SLOT_COUNT,
+        MacProtocolError, RxFilterBank,
     };
     pub use crate::rates::*;
     pub use crate::sync::DropGuard;

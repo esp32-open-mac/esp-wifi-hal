@@ -271,6 +271,7 @@ pub enum MacProtocolError {
     },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[instability::unstable]
 /// Status of the TX slot.
 pub enum HardwareTxQueueStatus {
     /// The slot is currently disabled and the data in it may be invalid.
@@ -281,10 +282,12 @@ pub enum HardwareTxQueueStatus {
     Ready,
 }
 impl HardwareTxQueueStatus {
+    #[instability::unstable]
     /// Is the data in the slot valid.
     fn valid(&self) -> bool {
         *self != Self::Disabled
     }
+    #[instability::unstable]
     /// Is the slot enabled for transmission.
     fn enabled(&self) -> bool {
         *self == Self::Ready
@@ -293,6 +296,7 @@ impl HardwareTxQueueStatus {
 
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[instability::unstable]
 /// Controls which control frames pass the filter.
 pub struct ControlFrameFilterConfig {
     /// Control frame wrapper
@@ -315,10 +319,12 @@ pub struct ControlFrameFilterConfig {
     pub cf_end_cf_ack: bool,
 }
 impl ControlFrameFilterConfig {
+    #[instability::unstable]
     /// Disable reception of all control frames.
     pub fn none() -> Self {
         Self::default()
     }
+    #[instability::unstable]
     /// Receive all control frames.
     pub fn all() -> Self {
         Self {
@@ -392,7 +398,7 @@ impl EdcaAccessCategory {
     }
     #[inline]
     /// Get the hardware slot number.
-    ///
+    //
     /// NOTE: This slot numbering does not line up, with the one used by Espressif, as we index the
     /// slots in ascending address order (i.e. slot 0 registers have the lowest addresses), not
     /// descending order (i.e. slot 0 register have the highest addresses), which is used in the
@@ -537,6 +543,7 @@ pub struct LowLevelDriver {
     _phy_init_guard: Option<PhyInitGuard<'static>>,
 }
 impl LowLevelDriver {
+    #[instability::unstable]
     /// Get the PAC Wi-Fi peripheral.
     ///
     /// # Safety
@@ -546,12 +553,14 @@ impl LowLevelDriver {
     pub unsafe fn regs() -> WIFI {
         Self::regs_internal()
     }
+    #[instability::unstable]
     /// Get the PAC Wi-Fi peripheral.
     ///
     /// This stops rust-analyzer from doing funky shit.
     fn regs_internal() -> WIFI {
         unsafe { WIFI::steal() }
     }
+    #[instability::unstable]
     /// Create a new [LowLevelDriver].
     pub fn new(_wifi: esp_hal::peripherals::WIFI<'_>) -> Self {
         // The reason we first create the struct an then initialize it, is so that we can access
@@ -566,6 +575,7 @@ impl LowLevelDriver {
 
     // Initialization
 
+    #[instability::unstable]
     /// Set the power and reset status of the Wi-Fi peripheral module.
     ///
     /// # Safety
@@ -592,6 +602,7 @@ impl LowLevelDriver {
             enable_module,
         );
     }
+    #[instability::unstable]
     /// Perform a full MAC reset.
     ///
     /// # Safety
@@ -614,6 +625,7 @@ impl LowLevelDriver {
             Self::set_rx_enable(false);
         }
     }
+    #[instability::unstable]
     /// Initialize or deinitialize the MAC.
     ///
     /// If `intialized` is `true`, the MAC will be initialized, and vice versa.
@@ -654,6 +666,7 @@ impl LowLevelDriver {
         // Spin until the MAC is no longer ready.
         while !intialized && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK != 0 {}
     }
+    #[instability::unstable]
     #[inline]
     /// Setup relevant blocks of the MAC.
     ///
@@ -671,6 +684,7 @@ impl LowLevelDriver {
         self.setup_filtering();
         self.setup_crypto();
     }
+    #[instability::unstable]
     /// Initialize the hardware.
     ///
     /// As modem sleep is currently unimplemented, this does a full initialization.
@@ -721,6 +735,7 @@ impl LowLevelDriver {
 
     // Interrupt handling
 
+    #[instability::unstable]
     #[inline(always)]
     /// Get and clear the MAC interrupt cause.
     ///
@@ -738,6 +753,7 @@ impl LowLevelDriver {
             .write(|w| unsafe { w.bits(cause) });
         MacInterruptCause(cause)
     }
+    #[instability::unstable]
     #[cfg(pwr_interrupt_present)]
     #[inline(always)]
     /// Get and clear the PWR interrupt cause.
@@ -756,6 +772,7 @@ impl LowLevelDriver {
             .write(|w| unsafe { w.bits(cause) });
         PwrInterruptCause(cause)
     }
+    #[instability::unstable]
     /// Configure the specified interrupt.
     ///
     /// Usually all relevant interrupts are bound to the same interrupt handler and CPU interrupt.
@@ -781,6 +798,7 @@ impl LowLevelDriver {
 
     // RX
 
+    #[instability::unstable]
     #[inline]
     /// Enable or disable the receiving of frames.
     ///
@@ -791,6 +809,7 @@ impl LowLevelDriver {
             .rx_ctrl()
             .modify(|_, w| w.rx_enable().bit(enable_rx));
     }
+    #[instability::unstable]
     #[inline]
     /// Check if RX is enabled.
     ///
@@ -798,6 +817,7 @@ impl LowLevelDriver {
     pub fn rx_enabled(&self) -> bool {
         Self::regs_internal().rx_ctrl().read().rx_enable().bit()
     }
+    #[instability::unstable]
     /// Tell the hardware to reload the RX descriptors.
     ///
     /// This will spin, until the bit is clear again.
@@ -811,6 +831,7 @@ impl LowLevelDriver {
         // Wait for the hardware descriptors to no longer be in reload.
         while reg.read().rx_descr_reload().bit() {}
     }
+    #[instability::unstable]
     /// Set the base descriptor.
     pub fn set_base_rx_descriptor(&self, base_descriptor: NonNull<DmaDescriptor>) {
         Self::regs_internal()
@@ -819,11 +840,13 @@ impl LowLevelDriver {
             .write(|w| unsafe { w.bits(base_descriptor.expose_provenance().get() as u32) });
         self.reload_hw_rx_descriptors();
     }
+    #[instability::unstable]
     /// Reset the base descriptor.
     pub fn clear_base_rx_descriptor(&self) {
         Self::regs_internal().rx_dma_list().rx_descr_base().reset();
         self.reload_hw_rx_descriptors();
     }
+    #[instability::unstable]
     /// Start receiving frames.
     ///
     /// This will set the provided descriptor as the base of the RX DMA list and enable RX.
@@ -833,6 +856,7 @@ impl LowLevelDriver {
             Self::set_rx_enable(true);
         }
     }
+    #[instability::unstable]
     /// Stop receiving frames.
     ///
     /// This will also clear the RX DMA list.
@@ -842,6 +866,7 @@ impl LowLevelDriver {
         }
         self.clear_base_rx_descriptor();
     }
+    #[instability::unstable]
     /// Get the base RX descriptor.
     pub fn base_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
@@ -852,6 +877,7 @@ impl LowLevelDriver {
                 .bits() as usize,
         ))
     }
+    #[instability::unstable]
     /// Get the next RX descriptor.
     pub fn next_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
@@ -862,6 +888,7 @@ impl LowLevelDriver {
                 .bits() as usize,
         ))
     }
+    #[instability::unstable]
     /// Get the last RX descriptor.
     pub fn last_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
         NonNull::new(with_exposed_provenance_mut(
@@ -875,6 +902,7 @@ impl LowLevelDriver {
 
     // RX filtering
 
+    #[instability::unstable]
     /// Enable or disable the specified filter.
     pub fn set_filter_enable(&self, interface: usize, filter_bank: RxFilterBank, enabled: bool) {
         Self::regs_internal()
@@ -882,6 +910,7 @@ impl LowLevelDriver {
             .mask_high(interface)
             .modify(|_, w| w.enabled().bit(enabled));
     }
+    #[instability::unstable]
     /// Check if the filter is enabled.
     pub fn filter_enabled(&self, interface: usize, filter_bank: RxFilterBank) -> bool {
         Self::regs_internal()
@@ -891,6 +920,7 @@ impl LowLevelDriver {
             .enabled()
             .bit()
     }
+    #[instability::unstable]
     /// Set the filter address for the specified interface and bank combination.
     ///
     /// This will neither enable the filter nor configure the mask.
@@ -911,6 +941,7 @@ impl LowLevelDriver {
             .addr_high(interface)
             .write(|w| unsafe { w.addr().bits(address_high) });
     }
+    #[instability::unstable]
     /// Set the filter mask for the specified interface and bank combination.
     ///
     /// This will neither enable the filter nor configure the address.
@@ -928,6 +959,7 @@ impl LowLevelDriver {
             .mask_high(interface)
             .modify(|_, w| unsafe { w.mask().bits(mask_high) });
     }
+    #[instability::unstable]
     /// Clear a filter bank.
     ///
     /// This zeroes out the address and mask, while also disabling the filter as a side effect.
@@ -948,6 +980,7 @@ impl LowLevelDriver {
         // As a side effect, this also disables the filter.
         filter_bank.mask_high(interface).reset();
     }
+    #[instability::unstable]
     /// Reset the filters for an interface.
     ///
     /// This will clear the RX and BSSID filters, as well as enabling the BSSID check and enabling
@@ -959,6 +992,7 @@ impl LowLevelDriver {
         self.set_bssid_check_enable(interface, true);
         self.set_filtered_address_types(interface, true, true);
     }
+    #[instability::unstable]
     /// Set the type of addresses that should be filtered.
     ///
     /// If an address type is unfiltered, frames with RAs matching that address type will pass the
@@ -973,6 +1007,7 @@ impl LowLevelDriver {
                     .bit(multicast)
             });
     }
+    #[instability::unstable]
     /// Configure if the BSSID should be checked for RX filtering.
     ///
     /// If the BSSID check is enabled, a frame will only pass the RX filter, if its BSSID matches
@@ -982,6 +1017,7 @@ impl LowLevelDriver {
             .filter_control(interface)
             .modify(|_, w| w.bssid_check().bit(enabled));
     }
+    #[instability::unstable]
     /// Configure which control frames pass the filter.
     pub fn set_control_frame_filter(&self, interface: usize, config: &ControlFrameFilterConfig) {
         Self::regs_internal()
@@ -1007,6 +1043,7 @@ impl LowLevelDriver {
                     .bit(config.cf_end_cf_ack)
             });
     }
+    #[instability::unstable]
     /// Set the parameters for scanning mode.
     ///
     /// We don't entirely know what these parmeters mean.
@@ -1025,6 +1062,7 @@ impl LowLevelDriver {
                     .bit(other_frames)
             });
     }
+    #[instability::unstable]
     #[inline]
     /// Setup RX filtering.
     ///
@@ -1040,6 +1078,7 @@ impl LowLevelDriver {
 
     // TX
 
+    #[instability::unstable]
     /// Get raw transmission status bits.
     unsafe fn raw_tx_status(tx_result: Result<(), ChannelAccessError>) -> u8 {
         let wifi = LowLevelDriver::regs_internal();
@@ -1051,6 +1090,7 @@ impl LowLevelDriver {
             Err(ChannelAccessError::Collision) => wifi.txq_state().tx_error_status().read().bits(),
         }) as u8
     }
+    #[instability::unstable]
     /// Clear slot transmission status bit.
     unsafe fn clear_tx_slot_bit(tx_result: Result<(), ChannelAccessError>, slot: usize) {
         let wifi = LowLevelDriver::regs_internal();
@@ -1069,6 +1109,7 @@ impl LowLevelDriver {
                 .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
         };
     }
+    #[instability::unstable]
     #[inline]
     /// Process a TX status.
     ///
@@ -1095,6 +1136,7 @@ impl LowLevelDriver {
                 unsafe { Self::clear_tx_slot_bit(tx_result, queue) };
             });
     }
+    #[instability::unstable]
     #[inline]
     /// Configure the status of a TX slot.
     ///
@@ -1112,6 +1154,7 @@ impl LowLevelDriver {
                     .bit(queue_status.enabled())
             });
     }
+    #[instability::unstable]
     #[inline]
     /// Start transmission for a queue.
     ///
@@ -1121,6 +1164,7 @@ impl LowLevelDriver {
             Self::set_tx_queue_status(queue, HardwareTxQueueStatus::Ready);
         }
     }
+    #[instability::unstable]
     #[inline]
     /// Mark the transmission on a queue as done.
     pub fn tx_done(&self, queue: HardwareTxQueue) {
@@ -1132,6 +1176,7 @@ impl LowLevelDriver {
             .plcp0()
             .reset();
     }
+    #[instability::unstable]
     #[inline]
     /// Returns the result of a transmission from the perspective of the MAC protocol.
     ///
@@ -1179,6 +1224,7 @@ impl LowLevelDriver {
             _ => Err(MacProtocolError::Unknown { error, sub_error }),
         }
     }
+    #[instability::unstable]
     #[inline]
     /// Set parameters for channel access.
     ///
@@ -1203,6 +1249,7 @@ impl LowLevelDriver {
                     .bits(aifsn as _)
             });
     }
+    #[instability::unstable]
     #[inline]
     /// Configure the PLCP0 register for a TX queue.
     pub fn set_plcp0(
@@ -1233,6 +1280,7 @@ impl LowLevelDriver {
                 .modify(|r, w| unsafe { w.bits(r.bits() | 0x0800_0000) });
         }
     }
+    #[instability::unstable]
     #[inline]
     /// Configure the PLCP1 register for a TX queue.
     ///
@@ -1267,6 +1315,7 @@ impl LowLevelDriver {
                     .set_bit()
             });
     }
+    #[instability::unstable]
     #[inline]
     /// Configure the PLCP2 register for a TX queue.
     ///
@@ -1276,6 +1325,7 @@ impl LowLevelDriver {
             .plcp2(queue.hardware_slot())
             .write(|w| w.unknown().set_bit());
     }
+    #[instability::unstable]
     #[inline]
     /// Set the duration for a TX queue.
     pub fn set_duration(&self, queue: HardwareTxQueue, duration: u16) {
@@ -1284,6 +1334,7 @@ impl LowLevelDriver {
             .duration(queue.hardware_slot())
             .write(|w| unsafe { w.bits(duration | (duration << 16)) });
     }
+    #[instability::unstable]
     #[inline]
     /// Configure the HT related register for a TX queue.
     pub fn set_ht_parameters(
@@ -1310,6 +1361,7 @@ impl LowLevelDriver {
 
     // Crypto
 
+    #[instability::unstable]
     #[inline]
     /// Initialize hardware cryptography.
     ///
@@ -1332,6 +1384,7 @@ impl LowLevelDriver {
             .general_crypto_control()
             .reset();
     }
+    #[instability::unstable]
     /// Enable or disable a key slot.
     ///
     /// As soon, as the key slot is enabled, the hardware will treat the data in it as valid.
@@ -1341,6 +1394,7 @@ impl LowLevelDriver {
             .crypto_key_slot_state()
             .modify(|_, w| w.key_slot_enable(key_slot as u8).bit(enabled));
     }
+    #[instability::unstable]
     /// Check if the key slot is enabled.
     pub fn key_slot_enabled(&self, key_slot: usize) -> bool {
         Self::regs_internal()
@@ -1350,6 +1404,7 @@ impl LowLevelDriver {
             .key_slot_enable(key_slot as u8)
             .bit()
     }
+    #[instability::unstable]
     /// Set the cryptographic key for the specified key slot.
     ///
     /// # Panics
@@ -1381,6 +1436,7 @@ impl LowLevelDriver {
                 .write(|w| unsafe { w.bits(u32::from_ne_bytes(temp)) });
         }
     }
+    #[instability::unstable]
     /// Set the key slot parameters.
     ///
     /// This will also set the 22nd bit, of the [addr_high register](crate::esp_pac::wifi::crypto_key_slot::addr_high),
@@ -1421,6 +1477,7 @@ impl LowLevelDriver {
                 .bits(address_high)
         });
     }
+    #[instability::unstable]
     /// Clear all data from a key slot.
     ///
     /// This will not disable the key slot, use [Self::set_key_slot_enable] for that.
@@ -1433,6 +1490,7 @@ impl LowLevelDriver {
         key_slot.addr_high().reset();
         key_slot.key_value_iter().for_each(KEY_VALUE::reset);
     }
+    #[instability::unstable]
     /// Set the crypto parameters for an interface.
     ///
     /// Management Frame Protection (MFP) and Signaling and Payload Protection (SPP) are configured
@@ -1464,6 +1522,7 @@ impl LowLevelDriver {
                     .clear_bit()
             });
     }
+    #[instability::unstable]
     /// Set the status of SMS4 (WAPI) encapsulation.
     ///
     /// SMS4 needs to be enabled here, if you want to use it elsewhere. Our current understanding
@@ -1483,6 +1542,7 @@ impl LowLevelDriver {
 
     // Timing
 
+    #[instability::unstable]
     /// Get the offset between the system timers and the MAC timer.
     pub fn mac_time_offset() -> esp_hal::time::Duration {
         cfg_select! {
@@ -1495,6 +1555,7 @@ impl LowLevelDriver {
         }
         esp_hal::time::Duration::from_micros(offset)
     }
+    #[instability::unstable]
     /// Get the current value of the MAC timer.
     ///
     /// # Safety
@@ -1509,6 +1570,7 @@ impl LowLevelDriver {
 
     // RF
 
+    #[instability::unstable]
     /// Set the radio channel.
     ///
     /// The channel number is not validated.
@@ -1528,6 +1590,7 @@ impl LowLevelDriver {
             enable_wifi_agc();
         }
     }
+    #[instability::unstable]
     /// Run TX power control.
     ///
     /// We don't really know, what this does.

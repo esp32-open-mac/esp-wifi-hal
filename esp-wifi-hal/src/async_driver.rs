@@ -455,6 +455,7 @@ impl RxInterfaceController<'_> {
         self.ll_driver
             .set_filtered_address_types(self.interface, unicast, multicast);
     }
+    #[instability::unstable]
     /// Configure which control frames pass the filter.
     pub fn set_control_frame_filter(&self, config: &ControlFrameFilterConfig) {
         self.ll_driver
@@ -902,7 +903,7 @@ mod private {
                 WiFi::validate_key_slot(key_slot_index as usize)
                     .map_err(|_| TxError::OutOfBounds)?;
                 if !unsafe { self.ll_driver_ref() }.key_slot_enabled(key_slot_index as usize) {
-                    return Err(TxError::DisabledKeySlot)?;
+                    return Err(TxError::DisabledKeySlot);
                 }
             }
             WiFi::validate_interface(interface).map_err(|_| TxError::OutOfBounds)?;
@@ -1420,6 +1421,7 @@ impl<'res> WiFi<'res> {
                 .set_filtered_address_types(interface, unicast, multicast);
         })
     }
+    #[instability::unstable]
     /// Configure which control frames pass the filter.
     pub fn set_control_frame_filter(
         &self,

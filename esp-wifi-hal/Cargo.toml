@@ -39,6 +39,7 @@ log = { version = "0.4.28", optional = true }
 critical-section = "1.2.0"
 num = { version = "0.4.3", default-features = false }
 esp-wifi-rates = { version = "0.1.0" }
+instability = "0.3.13"
 
 [profile.dev]
 # Rust debug is too slow.
@@ -79,3 +80,5 @@ defmt = [
 ]
 log = ["dep:log", "defmt-or-log/log", "esp-phy/log-04", "esp-sync/log-04"]
 critical_section = []
+unstable = []
+

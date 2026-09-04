@@ -64,6 +64,7 @@ pub struct AesCipherParameters<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[non_exhaustive]
 /// Parameters for all supported ciphers.
 ///
 /// Only CCMP has been tested so far. GCMP is commented out, since it doesn't work on the ESP32 and

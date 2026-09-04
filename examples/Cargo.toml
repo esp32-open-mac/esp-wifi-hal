@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 
-esp-wifi-hal = { path = "../esp-wifi-hal/", features = ["log"] }
+esp-wifi-hal = { path = "../esp-wifi-hal/", features = ["log", "unstable"] }
 
 # ESP-HAL dependencies
 esp-hal = { version = "1.1.0", features = ["unstable"] }

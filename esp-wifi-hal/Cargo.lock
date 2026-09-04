@@ -689,6 +689,7 @@ dependencies = [
  "esp-wifi-sys-esp32s2",
  "esp32 0.40.2",
  "esp32s2 0.31.2",
+ "instability",
  "log",
  "macro-bits",
  "num",

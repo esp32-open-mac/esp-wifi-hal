@@ -7,6 +7,10 @@ The actual crate lives in `esp-wifi-hal/` and examples are in `examples/`.
 The `critical_section` feature allows using the driver across cores. If it is disabled, no critical sections are used in the driver at all.
 
 For further information see the docs.
+
+ESP32-S3 porting research is in [docs/esp32s3](docs/esp32s3/README.md): a reviewed
+MAC reference, register and ABI observations, host regressions, and an ESP-IDF
+hardware comparison. This does not yet add S3 support to the Rust crate.
 ## Building
 To set up a development environment follow the guide at https://docs.esp-rs.org/book/installation/index.html. Since this only works on the ESP32 and ESP32-S2 right now, only the Xtensa section is of interest.
 To try one of these examples:

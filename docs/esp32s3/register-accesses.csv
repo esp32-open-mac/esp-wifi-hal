@@ -1,0 +1,257 @@
+function,function_offset,operation,width_bits,address_expression,indexed
+mac_tx_set_plcp0,0x95,write,32,0x60033d08 + 4294967288*(mem8[0x00000004 + 1*(a2@0x40080092)]),True
+mac_tx_set_duration,0x30,write,32,0x60034318 + 1*(a10@0x400800ef),True
+hal_mac_tx_config_timeout,0x17,read,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801b0)]),True
+hal_mac_tx_config_timeout,0x25,write,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801b0)]),True
+hal_mac_tx_config_edca,0x15,read,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801e8)]),True
+hal_mac_tx_config_edca,0x29,write,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801e8)]),True
+hal_mac_tx_config_edca,0x3a,read,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801e8)]),True
+hal_mac_tx_config_edca,0x4e,write,32,0x60033d04 + 4294967288*(mem8[0x00000004 + 1*(a2@0x400801e8)]),True
+hal_mac_txq_enable,0x12,read,32,0x60033d08 + 4294967288*(a2@0x4008024a),True
+hal_mac_txq_enable,0x1d,write,32,0x60033d08 + 4294967288*(a2@0x4008024a),True
+hal_mac_txq_disable,0x12,read,32,0x60033d08 + 4294967288*(a2@0x40080276),True
+hal_mac_txq_disable,0x1d,write,32,0x60033d08 + 4294967288*(a2@0x40080276),True
+hal_mac_tx_get_blockack,0x14,read,32,0x60034334 + 1*(a2@0x400802a9),True
+hal_mac_tx_get_blockack,0x1f,read,32,0x60034334 + 1*(a2@0x400802a9),True
+hal_mac_tx_get_blockack,0x2f,read,32,0x60034328 + 1*(a2@0x400802a9),True
+hal_mac_tx_get_blockack,0x3b,read,32,0x60034324 + 1*(a2@0x400802a9),True
+hal_mac_set_txq_invalid,0x12,read,32,0x60033d08 + 4294967288*(a2@0x400802f2),True
+hal_mac_set_txq_invalid,0x1d,write,32,0x60033d08 + 4294967288*(a2@0x400802f2),True
+hal_mac_is_txq_valid,0x12,read,32,0x60033d08 + 4294967288*(a2@0x4008031a),True
+hal_mac_is_txq_enabled,0x12,read,32,0x60033d08 + 4294967288*(a2@0x4008033a),True
+hal_random,0x9,read,32,0x6003507c,False
+hal_now,0x9,read,32,0x60035000,False
+hal_mac_tx_set_cca,0xc,read,32,0x60033c50,False
+hal_mac_tx_set_cca,0x1a,write,32,0x60033c50,False
+hal_mac_disable_low_rate,0x15,write,32,0x60033410,False
+hal_mac_disable_low_rate,0x1d,write,32,0x60033414,False
+hal_mac_disable_low_rate,0x25,write,32,0x60033404,False
+hal_mac_disable_low_rate,0x2d,write,32,0x60033408,False
+hal_mac_enable_low_rate,0x12,write,32,0x60033410,False
+hal_mac_enable_low_rate,0x1a,write,32,0x60033414,False
+hal_mac_enable_low_rate,0x22,write,32,0x60033404,False
+hal_mac_enable_low_rate,0x2a,write,32,0x60033408,False
+hal_mac_is_low_rate_enabled,0xc,read,32,0x6001c860,False
+hal_mac_is_low_rate_enabled,0x1c,read,32,0x6001c87c,False
+mac_rxbuf_init,0xc,read,32,0x60033c5c,False
+mac_rxbuf_init,0x1d,write,32,0x60033c5c,False
+mac_rxbuf_init,0x22,read,32,0x60033c60,False
+mac_rxbuf_init,0x30,write,32,0x60033c60,False
+mac_rxbuf_init,0x3b,read,32,0x60033c64,False
+mac_rxbuf_init,0x4c,write,32,0x60033c64,False
+mac_rxbuf_init,0x51,read,32,0x60033080,False
+mac_rxbuf_init,0x5c,write,32,0x60033080,False
+mac_rxbuf_init,0x69,write,32,0x60033088,False
+hal_disable_mac,0xc,read,32,0x60033c00,False
+hal_disable_mac,0x14,write,32,0x60033c00,False
+hal_disable_mac,0x1e,read,32,0x60033c34,False
+hal_disable_mac,0x23,write,32,0x60033c34,False
+hal_disable_mac,0x2b,write,32,0x60033c38,False
+hal_disable_mac,0x33,write,32,0x60033c24,False
+hal_enable_mac,0xc,read,32,0x60033c00,False
+hal_enable_mac,0x14,write,32,0x60033c00,False
+hal_enable_mac,0x1c,write,32,0x60033c34,False
+hal_enable_mac,0x24,write,32,0x60033088,False
+hal_mac_rx_read_rxdscrlast,0x9,read,32,0x60033090,False
+hal_mac_rx_read_rxdscrnext,0x9,read,32,0x6003308c,False
+hal_mac_rx_set_base,0x9,write,32,0x60033088,False
+mac_txrx_init,0xc,read,32,0x60033c6c,False
+mac_txrx_init,0x16,write,32,0x60033c6c,False
+mac_txrx_init,0x1b,read,32,0x60033c6c,False
+mac_txrx_init,0x26,write,32,0x60033c6c,False
+mac_txrx_init,0x58,read,32,0x60033c74,False
+mac_txrx_init,0x63,write,32,0x60033c74,False
+mac_txrx_init,0x6e,read,32,0x60033100,False
+mac_txrx_init,0x76,write,32,0x60033100,False
+mac_txrx_init,0x7e,read,32,0x60033104,False
+mac_txrx_init,0x86,write,32,0x60033104,False
+mac_txrx_init,0x8b,read,32,0x60033108,False
+mac_txrx_init,0x93,write,32,0x60033108,False
+mac_txrx_init,0x9b,read,32,0x6003310c,False
+mac_txrx_init,0xa3,write,32,0x6003310c,False
+mac_txrx_init,0xa8,read,32,0x60033100,False
+mac_txrx_init,0xb3,write,32,0x60033100,False
+mac_txrx_init,0xb8,read,32,0x60033104,False
+mac_txrx_init,0xc0,write,32,0x60033104,False
+mac_txrx_init,0xc5,read,32,0x60033100,False
+mac_txrx_init,0xd0,write,32,0x60033100,False
+mac_txrx_init,0xd5,read,32,0x60033104,False
+mac_txrx_init,0xe0,write,32,0x60033104,False
+mac_txrx_init,0xe5,read,32,0x60033c6c,False
+mac_txrx_init,0xf0,write,32,0x60033c6c,False
+mac_txrx_init,0xf8,read,32,0x60033114,False
+mac_txrx_init,0x100,write,32,0x60033114,False
+mac_txrx_init,0x108,read,32,0x60033118,False
+mac_txrx_init,0x113,write,32,0x60033118,False
+mac_txrx_init,0x118,read,32,0x60033118,False
+mac_txrx_init,0x129,write,32,0x60033118,False
+mac_txrx_init,0x133,read,32,0x60033c78,False
+mac_txrx_init,0x13b,write,32,0x60033c78,False
+mac_txrx_init,0x146,read,32,0x60033c10,False
+mac_txrx_init,0x154,write,32,0x60033c10,False
+mac_txrx_init,0x159,read,32,0x60033c10,False
+mac_txrx_init,0x161,write,32,0x60033c10,False
+mac_txrx_init,0x166,read,32,0x60033c10,False
+mac_txrx_init,0x171,write,32,0x60033c10,False
+mac_txrx_init,0x179,read,32,0x60033c14,False
+mac_txrx_init,0x184,write,32,0x60033c14,False
+mac_txrx_init,0x18c,read,32,0x60033c18,False
+mac_txrx_init,0x197,write,32,0x60033c18,False
+mac_txrx_init,0x19f,read,32,0x60033c94,False
+mac_txrx_init,0x1af,write,32,0x60033c94,False
+mac_txrx_init,0x1b4,read,32,0x60033c54,False
+mac_txrx_init,0x1bf,write,32,0x60033c54,False
+mac_txrx_init,0x1c4,read,32,0x60033c54,False
+mac_txrx_init,0x1cc,write,32,0x60033c54,False
+mac_txrx_init,0x1d7,read,32,0x60033c88,False
+mac_txrx_init,0x1df,write,32,0x60033c88,False
+mac_txrx_init,0x1e9,read,32,0x600332b8,False
+mac_txrx_init,0x1f1,write,32,0x600332b8,False
+mac_txrx_init,0x1fc,read,32,0x60033084,False
+mac_txrx_init,0x204,write,32,0x60033084,False
+mac_last_rxbuf_init,0xf,write,32,0x60033120,False
+mac_last_rxbuf_init,0x1a,write,32,0x6003313c,False
+mac_last_rxbuf_init,0x25,write,32,0x60033158,False
+mac_last_rxbuf_init,0x2d,write,32,0x60033124,False
+mac_last_rxbuf_init,0x35,write,32,0x60033140,False
+mac_last_rxbuf_init,0x3d,write,32,0x6003315c,False
+mac_last_rxbuf_init,0x45,write,32,0x60033128,False
+mac_last_rxbuf_init,0x50,write,32,0x60033144,False
+mac_last_rxbuf_init,0x5b,write,32,0x60033160,False
+mac_last_rxbuf_init,0x66,write,32,0x6003312c,False
+mac_last_rxbuf_init,0x6e,write,32,0x60033148,False
+mac_last_rxbuf_init,0x78,write,32,0x60033164,False
+mac_last_rxbuf_init,0x80,write,32,0x60033130,False
+mac_last_rxbuf_init,0x8b,write,32,0x6003314c,False
+mac_last_rxbuf_init,0x93,write,32,0x60033168,False
+mac_last_rxbuf_init,0x9e,write,32,0x60033134,False
+mac_last_rxbuf_init,0xa8,write,32,0x60033150,False
+mac_last_rxbuf_init,0xb3,write,32,0x6003316c,False
+mac_last_rxbuf_init,0xbe,read,32,0x6003311c,False
+mac_last_rxbuf_init,0xc6,write,32,0x6003311c,False
+mac_last_rxbuf_init,0xcb,read,32,0x6003311c,False
+mac_last_rxbuf_init,0xd6,write,32,0x6003311c,False
+mac_last_rxbuf_init,0xe1,read,32,0x6003309c,False
+mac_last_rxbuf_init,0xe9,write,32,0x6003309c,False
+hal_deinit,0x24,read,32,0x600332b8,False
+hal_deinit,0x2c,write,32,0x600332b8,False
+hal_deinit,0x37,read,32,0x60033c34,False
+hal_deinit,0x3f,write,32,0x60033c34,False
+hal_deinit,0x46,write,32,0x60033c34,False
+hal_deinit,0x50,write,32,0x60033c40,False
+hal_deinit,0x5a,read,32,0x60033d14,False
+hal_deinit,0x62,write,32,0x60033d14,False
+hal_deinit,0x67,read,32,0x60033d14,False
+hal_mac_is_dma_enable,0xb,read,32,0x60035128,False
+hal_mac_interrupt_get_event,0x9,read,32,0x60033c3c,False
+hal_mac_interrupt_clr_event,0x9,write,32,0x60033c40,False
+hal_mac_interrupt_clr_watchdog,0xc,read,32,0x60033c40,False
+hal_mac_interrupt_clr_watchdog,0x14,write,32,0x60033c40,False
+hal_mac_set_addr,0x2f,write,32,0x60033040 + 8*(a2@0x40080af3),True
+hal_mac_set_addr,0x40,write,32,0x60033044 + 8*(a2@0x40080af3),True
+hal_mac_set_addr,0x47,write,32,0x60033060 + 8*(a2@0x40080af3),True
+hal_mac_set_addr,0x4f,write,32,0x60033064 + 8*(a2@0x40080af3),True
+hal_mac_set_addr,0x54,read,32,0x60033064 + 8*(a2@0x40080af3),True
+hal_mac_set_addr,0x5f,write,32,0x60033064 + 8*(a2@0x40080af3),True
+hal_mac_set_bssid,0x2f,read,32,0x60033024 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x3a,write,32,0x60033024 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x44,write,32,0x60033000 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x5d,read,32,0x60033004 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x68,write,32,0x60033004 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x74,write,32,0x60033020 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x7c,write,32,0x60033024 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x81,read,32,0x60033024 + 8*(a2@0x40080b77),True
+hal_mac_set_bssid,0x8c,write,32,0x60033024 + 8*(a2@0x40080b77),True
+hal_mac_rx_set_policy,0x49,read,32,0x60033024 + 8*(a3@0x40080c49),True
+hal_mac_rx_set_policy,0x60,read,32,0x60033024 + 8*(a3@0x40080c60),True
+hal_mac_rx_set_policy,0x8d,read,32,0x60033064 + 8*(a3@0x40080c90),True
+hal_init,0xb,read,32,0x60033d14,False
+hal_init,0x13,write,32,0x60033d14,False
+hal_init,0x18,read,32,0x60033d14,False
+hal_init,0x25,write,32,0x60033c34,False
+hal_init,0x30,write,32,0x60033c40,False
+hal_init,0x46,read,32,0x600330d8 + 4*(a2@0x40080d59),True
+hal_init,0x50,write,32,0x600330d8 + 4*(a2@0x40080d59),True
+hal_init,0x55,read,32,0x600330d8 + 4*(a2@0x40080d59),True
+hal_init,0x62,write,32,0x600330d8 + 4*(a2@0x40080d59),True
+hal_init,0xa0,write,32,0x60033c34,False
+hal_init,0xab,read,32,0x60033c6c,False
+hal_init,0xb3,write,32,0x60033c6c,False
+hal_init,0xbe,read,32,0x6003309c,False
+hal_init,0xcb,write,32,0x6003309c,False
+hal_init,0xd0,read,32,0x6003309c,False
+hal_init,0xe1,write,32,0x6003309c,False
+hal_init,0xe6,read,32,0x6003309c,False
+hal_init,0xf1,write,32,0x6003309c,False
+hal_mac_clr_bssid,0xf,read,32,0x60033024 + 8*(a2@0x40080e7a),True
+hal_mac_clr_bssid,0x1a,write,32,0x60033024 + 8*(a2@0x40080e7a),True
+hal_mac_tsf_get_time,0x13,read,32,0x6003500c,False
+hal_mac_tsf_get_time,0x1b,write,32,0x6003500c,False
+hal_mac_tsf_get_time,0x25,read,32,0x60035018,False
+hal_mac_tsf_get_time,0x2a,read,32,0x6003500c,False
+hal_mac_tsf_get_time,0x3c,read,32,0x6003500c,False
+hal_mac_tsf_get_time,0x47,write,32,0x6003500c,False
+hal_mac_tsf_get_time,0x4f,read,32,0x6003501c,False
+hal_mac_tsf_get_time,0x54,read,32,0x60035018,False
+hal_mac_tsf_get_time,0x5b,read,32,0x6003500c,False
+hal_get_tsf_time,0x25,read,32,0x60035018,False
+hal_get_tsf_time,0x4b,read,32,0x60035018,False
+hal_mac_tsf_set_time,0xf,write,32,0x60035010,False
+hal_mac_tsf_set_time,0x17,write,32,0x60035014,False
+hal_mac_tsf_set_time,0x1c,read,32,0x6003500c,False
+hal_mac_tsf_set_time,0x26,write,32,0x6003500c,False
+hal_mac_tsf_reset,0x15,read,32,0x60035034,False
+hal_mac_tsf_reset,0x1d,write,32,0x60035034,False
+hal_mac_tsf_reset,0x2b,write,32,0x60035010,False
+hal_mac_tsf_reset,0x33,write,32,0x60035014,False
+hal_mac_tsf_reset,0x3d,read,32,0x6003500c,False
+hal_mac_tsf_reset,0x45,write,32,0x6003500c,False
+hal_mac_tsf_reset,0x4a,read,32,0x60035034,False
+hal_mac_tsf_reset,0x55,write,32,0x60035034,False
+hal_mac_tsf_reset,0x62,read,32,0x60035028,False
+hal_mac_tsf_reset,0x6d,write,32,0x60035028,False
+hal_mac_tsf_reset,0x77,write,32,0x60035010,False
+hal_mac_tsf_reset,0x7f,write,32,0x60035014,False
+hal_mac_tsf_reset,0x84,read,32,0x6003500c,False
+hal_mac_tsf_reset,0x8e,write,32,0x6003500c,False
+hal_mac_tsf_reset,0x93,read,32,0x60035028,False
+hal_mac_tsf_reset,0x9e,write,32,0x60035028,False
+hal_mac_tsf_reset,0xa6,read,32,0x60035034,False
+hal_mac_tsf_reset,0xae,write,32,0x60035034,False
+hal_mac_tsf_reset,0xb3,write,32,0x60035010,False
+hal_mac_tsf_reset,0xb8,write,32,0x60035014,False
+hal_mac_tsf_reset,0xbd,read,32,0x6003500c,False
+hal_mac_tsf_reset,0xc7,write,32,0x6003500c,False
+hal_mac_tsf_reset,0xcc,read,32,0x60035034,False
+hal_mac_tsf_reset,0xd4,write,32,0x60035034,False
+hal_mac_init,0xc,read,32,0x60033ca0,False
+hal_mac_init,0x16,write,32,0x60033ca0,False
+hal_mac_deinit,0xc,read,32,0x60033ca0,False
+hal_mac_deinit,0x17,write,32,0x60033ca0,False
+hal_mac_deinit,0x28,read,32,0x60033ca0,False
+hal_mac_rx_enable,0xc,read,32,0x60033084,False
+hal_mac_rx_enable,0x14,write,32,0x60033084,False
+hal_mac_rx_disable,0xc,read,32,0x60033084,False
+hal_mac_rx_disable,0x14,write,32,0x60033084,False
+hal_enable_sta_beacon_filter,0xc,read,32,0x60033c34,False
+hal_enable_sta_beacon_filter,0x14,write,32,0x60033c34,False
+hal_enable_sta_beacon_filter,0x19,read,32,0x60033c34,False
+hal_enable_sta_beacon_filter,0x24,write,32,0x60033c34,False
+hal_enable_sta_beacon_filter,0x2e,read,32,0x600330a0,False
+hal_enable_sta_beacon_filter,0x36,write,32,0x600330a0,False
+hal_disable_sta_beacon_filter,0xb,read,32,0x600330a0,False
+hal_disable_sta_beacon_filter,0x13,write,32,0x600330a0,False
+hal_disable_sta_beacon_filter,0x1e,read,32,0x60033c34,False
+hal_disable_sta_beacon_filter,0x26,write,32,0x60033c34,False
+hal_set_sta_beacon_filter,0xc,read,32,0x60033004,False
+hal_set_sta_beacon_filter,0x1d,write,32,0x60033004,False
+hal_enable_sta_dump_beacon,0xc,read,32,0x600330e8,False
+hal_enable_sta_dump_beacon,0x1a,write,32,0x600330e8,False
+hal_enable_sta_dump_beacon,0x1f,read,32,0x600330e8,False
+hal_enable_sta_dump_beacon,0x2a,write,32,0x600330e8,False
+hal_beacon_ie_crc_get,0x9,read,32,0x600332b0,False
+hal_beacon_ie_crc_set,0x9,write,32,0x600332b4,False
+hal_rx_disable_bssid_check,0x11,read,32,0x600330d8 + 4*(a2@0x400812f2),True
+hal_rx_disable_bssid_check,0x1b,write,32,0x600330d8 + 4*(a2@0x400812f2),True
+hal_rx_enable_bssid_check,0x11,read,32,0x600330d8 + 4*(a2@0x40081316),True
+hal_rx_enable_bssid_check,0x1b,write,32,0x600330d8 + 4*(a2@0x40081316),True

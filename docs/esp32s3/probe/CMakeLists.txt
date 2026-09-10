@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.16)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+if(S3_HAL_ARCHIVE)
+    if(NOT EXISTS "${S3_HAL_ARCHIVE}")
+        message(FATAL_ERROR "Missing reviewed libpp archive")
+    endif()
+endif()
+project(s3_hal_e2e)

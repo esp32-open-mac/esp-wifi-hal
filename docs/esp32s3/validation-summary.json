@@ -1,0 +1,106 @@
+{
+  "date": "2026-09-10",
+  "stock": {
+    "passed": true,
+    "variant": "stock",
+    "app_sha256": "751fee5d45e7e0e4ad242ac4237be99952022360e4a5ec68e2bbd4ee7cea2ec8",
+    "ping_replies": [
+      20,
+      20,
+      20
+    ],
+    "tsf_delta_us": [
+      99176,
+      99153,
+      98808
+    ],
+    "heap_after_cycles": [
+      326092,
+      326084,
+      326096
+    ],
+    "signing_key_accepted_by_device": true
+  },
+  "reviewed": {
+    "passed": true,
+    "variant": "reviewed",
+    "app_sha256": "a27a7de2ded83373fd9f31a94cc2d9795da8330ad3c1cd5e782dcfad67f51d94",
+    "hal_source_sha256": "b27d3cfa6f8dde0fec8ab1ae84be7b235b3aa4f60c5f3fb5e22f27604446f98d",
+    "ping_replies": [
+      20,
+      20,
+      20
+    ],
+    "tsf_delta_us": [
+      99177,
+      99306,
+      99336
+    ],
+    "heap_after_cycles": [
+      326092,
+      326088,
+      326096
+    ],
+    "application_only": true,
+    "flash_offset": "0x20000",
+    "signing_key_accepted_by_device": true
+  },
+  "static_validation": {
+    "passed": true,
+    "host_test_groups": 10,
+    "functions": 57,
+    "bss_symbols": {
+      "g_mac_deinit_count": 4,
+      "g_mac_deinit_rxing": 1,
+      "g_mac_deinit_txing": 1
+    },
+    "all_function_sections_preserved": true,
+    "stock_hal_member_present": false,
+    "retained_functions": {
+      "hal_deinit": "4204de4c",
+      "hal_disable_sta_beacon_filter": "4204e22c",
+      "hal_get_tsf_time": "42074b90",
+      "hal_init": "4204e024",
+      "hal_mac_deinit": "40383e68",
+      "hal_mac_disable_low_rate": "4204da2c",
+      "hal_mac_enable_low_rate": "4204da60",
+      "hal_mac_ftm_get_t3": "42072e90",
+      "hal_mac_interrupt_clr_event": "40378a40",
+      "hal_mac_interrupt_get_event": "40378a30",
+      "hal_mac_is_txq_valid": "4204d9f0",
+      "hal_mac_rx_read_rxdscrnext": "40385bf8",
+      "hal_mac_rx_set_base": "40385c08",
+      "hal_mac_rx_set_policy": "4204dfa0",
+      "hal_mac_set_addr": "4204deb4",
+      "hal_mac_set_bssid": "4204df1c",
+      "hal_mac_set_rxq_policy": "4204dd1c",
+      "hal_mac_set_txq_invalid": "4204d9cc",
+      "hal_mac_tsf_reset": "4204e150",
+      "hal_mac_tx_config_edca": "40383dd8",
+      "hal_mac_tx_config_timeout": "40383dac",
+      "hal_mac_tx_set_cca": "4204da0c",
+      "hal_mac_tx_set_ppdu": "4204d994",
+      "hal_mac_txq_disable": "42074b6c",
+      "hal_mac_txq_enable": "40383e34",
+      "hal_random": "40383e58",
+      "mac_last_rxbuf_init": "4204dd54",
+      "mac_rxbuf_init": "4204da90",
+      "mac_tx_set_pti": "42074b2c",
+      "mac_txrx_init": "4204db08"
+    },
+    "rom_resolved_functions": {
+      "hal_mac_is_dma_enable": "40005904",
+      "hal_mac_is_low_rate_enabled": "400052a4",
+      "hal_mac_tx_get_blockack": "400052b0",
+      "mac_tx_set_duration": "400053dc",
+      "mac_tx_set_plcp0": "400053f4"
+    },
+    "source_sha256": "b27d3cfa6f8dde0fec8ab1ae84be7b235b3aa4f60c5f3fb5e22f27604446f98d",
+    "app_sha256": "a27a7de2ded83373fd9f31a94cc2d9795da8330ad3c1cd5e782dcfad67f51d94",
+    "other_members_unchanged": 29
+  },
+  "scope": "57-function ESP-IDF libpp.a HAL member; 30 replacement functions linked, five names resolved to ROM; other radio blobs retained",
+  "method": "Recorded comparison on one secured ESP32-S3 rev 0.1, ESP-IDF v5.4, 2026-09-10. No per-function execution coverage.",
+  "toolchain": "xtensa-esp-elf GCC 14.2.0 esp-14.2.0_20241119",
+  "rom_resolution_note": "The five absolute symbols are SDK ROM assignments. They are excluded from retained replacement function counts."
+}

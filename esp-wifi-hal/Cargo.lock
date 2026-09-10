@@ -550,7 +550,7 @@ dependencies = [
  "esp32c6",
  "esp32h2",
  "esp32s2 0.31.2",
- "esp32s3",
+ "esp32s3 0.35.2",
  "fugit",
  "instability",
  "nb 1.1.0",
@@ -611,8 +611,10 @@ dependencies = [
  "esp-sync",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32s2",
+ "esp-wifi-sys-esp32s3",
  "esp32 0.40.2",
  "esp32s2 0.31.2",
+ "esp32s3 0.35.2",
  "log",
 ]
 
@@ -637,6 +639,7 @@ dependencies = [
  "esp-metadata-generated 0.5.0",
  "esp32 0.41.0",
  "esp32s2 0.32.0",
+ "esp32s3 0.36.0",
 ]
 
 [[package]]
@@ -687,8 +690,10 @@ dependencies = [
  "esp-wifi-rates",
  "esp-wifi-sys-esp32",
  "esp-wifi-sys-esp32s2",
+ "esp-wifi-sys-esp32s3",
  "esp32 0.40.2",
  "esp32s2 0.31.2",
+ "esp32s3 0.35.2",
  "log",
  "macro-bits",
  "num",
@@ -717,6 +722,12 @@ name = "esp-wifi-sys-esp32s2"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a9a7f1bc51e7026c3012cda4f11d8799e5e0c0bb3be85797462219def6c26e"
+
+[[package]]
+name = "esp-wifi-sys-esp32s3"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d8321f44b57d8112cbd8607cc83b85783b9195289acb45532728e3e229e7786"
 
 [[package]]
 name = "esp32"
@@ -793,8 +804,16 @@ dependencies = [
 [[package]]
 name = "esp32s3"
 version = "0.35.2"
+source = "git+https://github.com/matteius/esp-pacs?rev=37b54bd9ad62de17b17a8d7984a2ace5e73d63dd#37b54bd9ad62de17b17a8d7984a2ace5e73d63dd"
+dependencies = [
+ "vcell",
+]
+
+[[package]]
+name = "esp32s3"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b4b8c4e4d9f187553ecdb7173edec7b2deb2beea106eedefecdb1654b8ee25a"
+checksum = "ab08eb1f516ba72b7eb272cdd88cd74899552292a294b831b2143a3e60f1666a"
 dependencies = [
  "vcell",
 ]

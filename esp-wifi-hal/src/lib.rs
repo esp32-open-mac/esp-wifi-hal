@@ -1,6 +1,6 @@
 //! # `esp-wifi-hal`
 //! This is an experimental driver for the Wi-Fi peripheral on ESP32-series chips.
-//! Currently we support both the plain ESP32 and the ESP32-S2.
+//! Supports ESP32, ESP32-S2 and an experimental ESP32-S3 port.
 //! ## Hardware overview
 //! This chapter will give a short overview of the structure of the Wi-Fi MAC peripheral.
 //!
@@ -67,6 +67,12 @@ pub mod crypto;
 mod dma_list;
 mod ffi;
 pub mod ll;
+#[cfg(feature = "esp32s3")]
+mod s3_mac;
+#[cfg(feature = "esp32s3")]
+mod s3_rx;
+#[cfg(feature = "esp32s3")]
+mod s3_tx;
 /// Support structures for data rates.
 pub use esp_wifi_rates as rates;
 mod sync;
@@ -80,6 +86,10 @@ cfg_select! {
     feature = "esp32s2" => {
         use esp32s2 as esp_pac;
         use esp_wifi_sys_esp32s2 as esp_wifi_sys;
+    }
+    feature = "esp32s3" => {
+        use esp32s3 as esp_pac;
+        use esp_wifi_sys_esp32s3 as esp_wifi_sys;
     }
     _ => {
         compile_error!("Adjust this for a new chip.");

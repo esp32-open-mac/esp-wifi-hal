@@ -1,5 +1,8 @@
 # ESP32-S3 reviewed MAC reference
 
+For the Rust S3 driver, build commands and FoA hardware tests, see [RUST.md](RUST.md).
+The C reference and ESP-IDF comparison below supplied the evidence for that port.
+
 `src/hal_mac.c` replaces the 57-function `hal_mac.o` member from ESP-IDF v5.4's
 ESP32-S3 `libpp.a`. See [the review](REVIEW.md) for exact input hashes, corrected
 ABI/dataflow errors, register observations, hardware results and remaining work.

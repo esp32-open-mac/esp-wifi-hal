@@ -1,4 +1,4 @@
-use crate::{borrowed_buffer::BorrowedBuffer, ll::LowLevelDriver};
+use crate::ll::LowLevelDriver;
 use core::{mem::MaybeUninit, ptr::NonNull};
 
 use esp_hal::dma::{DmaDescriptor, DmaDescriptorFlags, Owner};
@@ -126,13 +126,17 @@ impl DmaList {
     pub fn take_first(&mut self) -> Option<&'static mut DmaDescriptor> {
         let first = unsafe { self.rx_chain_ptrs?.0.as_mut() };
         trace!("Taking buffer: {:x} from DMA list.", first as *mut _ as u32);
-        if first.flags.suc_eof() && first.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH {
+        // Every completed descriptor must leave the head, including malformed
+        // short completions. The receive layer validates and recycles those.
+        if first.flags.suc_eof() {
             let next = first.next();
             if next.is_none() {
                 debug!("RX: Next DMA descriptor was none.");
             };
             self.set_rx_chain_base(next.map(NonNull::from));
             first.set_owner(Owner::Cpu);
+            // A borrowed descriptor must not retain a link into the live queue.
+            first.set_next(None);
 
             Some(first)
         } else {
@@ -160,6 +164,10 @@ impl DmaList {
     }
     /// Returns a [DMAListItem] to the end of the list.
     pub fn recycle(&mut self, dma_list_descriptor: &mut DmaDescriptor) {
+        // This descriptor becomes the new tail. Retaining its old next pointer
+        // can expose a borrowed buffer to DMA or create a cycle that skips the
+        // software head when buffers are returned out of order.
+        dma_list_descriptor.set_next(None);
         dma_list_descriptor.reset_for_rx();
         trace!(
             "Returned buffer: {:x} to DMA list.",
@@ -174,8 +182,12 @@ impl DmaList {
 
                 self.ll_driver.reload_hw_rx_descriptors();
 
-                if self.ll_driver.next_rx_descriptor().map(NonNull::as_ptr)
-                    != Some(0x3ff00000 as *mut _)
+                #[cfg(feature = "esp32s3")]
+                let hardware_has_next = self.ll_driver.next_rx_descriptor().is_some();
+                #[cfg(not(feature = "esp32s3"))]
+                let hardware_has_next = self.ll_driver.next_rx_descriptor().map(NonNull::as_ptr)
+                    != Some(0x3ff00000 as *mut _);
+                if hardware_has_next
                     || self.ll_driver.last_rx_descriptor().map(NonNull::as_ptr)
                         == Some(dma_list_descriptor)
                 {

@@ -19,8 +19,10 @@ cfg_select! {
         use esp_hal::peripherals::DPORT as SYSCON;
     }
     feature = "esp32s2" => {
-
         use esp_hal::peripherals::SYSCON;
+    }
+    feature = "esp32s3" => {
+        use esp_hal::peripherals::APB_CTRL as SYSCON;
     }
 }
 
@@ -29,7 +31,7 @@ use macro_bits::{bit, check_bit};
 
 use crate::{
     esp_pac::{Interrupt as PacInterrupt, WIFI, wifi::crypto_key_slot::KEY_VALUE},
-    ffi::{disable_wifi_agc, enable_wifi_agc, hal_init, tx_pwctrl_background},
+    ffi::{disable_wifi_agc, enable_wifi_agc, tx_pwctrl_background},
     rates::TxPhyRate,
 };
 
@@ -179,7 +181,7 @@ interrupt_cause_struct! {
         /// A frame was received.
         ///
         /// We don't know, what the individual bits mean, but this works.
-        rx => [0x100020, @chip(esp32) 0x4],
+        rx => [0x100020, @chip(esp32) 0x4, @chip(esp32s3) 0x1204000],
         /// A frame was transmitted successfully.
         tx_success => 0x80,
         /// A transmission timeout occured.
@@ -497,7 +499,7 @@ impl From<EdcaAccessCategory> for HardwareTxQueue {
     }
 }
 
-#[cfg(any(feature = "esp32", feature = "esp32s2"))]
+#[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32s3"))]
 /// The number of "interfaces" supported by the hardware.
 pub const INTERFACE_COUNT: usize = 4;
 
@@ -600,7 +602,7 @@ impl LowLevelDriver {
     unsafe fn reset_mac(&self) {
         // Perform a full reset of the Wi-Fi module.
         cfg_select! {
-            any(feature = "esp32", feature = "esp32s2") => {
+            any(feature = "esp32", feature = "esp32s2", feature = "esp32s3") => {
                 let syscon = SYSCON::regs();
                 syscon.wifi_rst_en().modify(|_, w| w.mac_rst().set_bit());
                 syscon.wifi_rst_en().modify(|_, w| w.mac_rst().clear_bit());
@@ -627,7 +629,7 @@ impl LowLevelDriver {
                 const MAC_INIT_MASK: u32 = 0xffffe800;
                 const MAC_READY_MASK: u32 = 0x2000;
             }
-            feature = "esp32s2" => {
+            any(feature = "esp32s2", feature = "esp32s3") => {
                 const MAC_INIT_MASK: u32 = 0xff00efff;
                 const MAC_READY_MASK: u32 = 0x6000;
             }
@@ -636,9 +638,9 @@ impl LowLevelDriver {
             }
         }
         // Spin until the MAC state is marked as ready.
-        // This is only required on the ESP32-S2.
+        // Required on the ESP32-S2 and ESP32-S3.
         while !intialized
-            && cfg!(feature = "esp32s2")
+            && cfg!(any(feature = "esp32s2", feature = "esp32s3"))
             && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK != 0
         {}
         // If we are initializing the MAC, we need to clear some bits, by masking the reg, with the
@@ -660,11 +662,16 @@ impl LowLevelDriver {
     /// # Safety
     /// This should only be called during init.
     unsafe fn setup_mac(&self) {
-        // We call the proprietary blob here, to do some init for us. In the long term, this will
-        // be moved to open source code. In the meantime, we do the init, that we already understand a
-        // second time in open source code, which should have no bad effects.
+        // S3 uses the reviewed Rust MAC sequence; the older chips retain blob
+        // initialization. Shared setup below installs this driver's filter and
+        // crypto policy after the chip-specific defaults.
         unsafe {
-            hal_init();
+            #[cfg(osi_funcs_in_rom)]
+            crate::ffi::install_osi_funcs();
+            #[cfg(feature = "esp32s3")]
+            crate::s3_mac::init();
+            #[cfg(not(feature = "esp32s3"))]
+            crate::ffi::hal_init();
         }
 
         // Open source setup code
@@ -704,6 +711,8 @@ impl LowLevelDriver {
         let enable_mask = cfg_select! {
             feature = "esp32" => 0x00000406,
             feature = "esp32s2" => 0x000007cf,
+            // ESP-IDF esp32s3 syscon_reg.h: SYSTEM_WIFI_CLK_EN.
+            feature = "esp32s3" => 0x00fb9fcf,
             _ => compile_error!("If you're adding a new chip, you have to adjust the modem clock enable mask.")
         };
         SYSCON::regs()
@@ -844,33 +853,41 @@ impl LowLevelDriver {
     }
     /// Get the base RX descriptor.
     pub fn base_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(with_exposed_provenance_mut(
+        Self::rx_descriptor_pointer(
             Self::regs_internal()
                 .rx_dma_list()
                 .rx_descr_base()
                 .read()
-                .bits() as usize,
-        ))
+                .bits(),
+        )
     }
     /// Get the next RX descriptor.
     pub fn next_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(with_exposed_provenance_mut(
+        Self::rx_descriptor_pointer(
             Self::regs_internal()
                 .rx_dma_list()
                 .rx_descr_next()
                 .read()
-                .bits() as usize,
-        ))
+                .bits(),
+        )
     }
     /// Get the last RX descriptor.
     pub fn last_rx_descriptor(&self) -> Option<NonNull<DmaDescriptor>> {
-        NonNull::new(with_exposed_provenance_mut(
+        Self::rx_descriptor_pointer(
             Self::regs_internal()
                 .rx_dma_list()
                 .rx_descr_last()
                 .read()
-                .bits() as usize,
-        ))
+                .bits(),
+        )
+    }
+
+    fn rx_descriptor_pointer(raw: u32) -> Option<NonNull<DmaDescriptor>> {
+        #[cfg(feature = "esp32s3")]
+        let address = crate::s3_rx::descriptor_address(raw)?;
+        #[cfg(not(feature = "esp32s3"))]
+        let address = raw as usize;
+        NonNull::new(with_exposed_provenance_mut(address))
     }
 
     // RX filtering
@@ -1245,6 +1262,47 @@ impl LowLevelDriver {
         interface: usize,
         key_slot: Option<u8>,
     ) {
+        #[cfg(feature = "esp32s3")]
+        {
+            // Layout from mac_tx_set_plcp1 of the ESP32-S3 blob: LEN 0..11, RATE 12..16,
+            // KEY_SLOT_ID 17.., IS_80211_N 25. The interface ID and the rate the hardware expects
+            // the response at live in the "misc" slot register (PAC: PLCP2).
+            let hardware_rate = match rate {
+                TxPhyRate::Ht(ht) => crate::s3_tx::ht_rate(ht.mcs_index(), ht.short_gi()),
+                _ => rate.as_hardware_rate(),
+            };
+            let plcp1 = (frame_length as u32 & 0xfff)
+                | ((hardware_rate as u32 & 0x1f) << 12)
+                | ((key_slot.unwrap_or_default() as u32) << 17)
+                | ((matches!(rate, TxPhyRate::Ht(_)) as u32) << 25);
+            Self::regs_internal()
+                .plcp1(queue.hardware_slot())
+                .write(|w| unsafe { w.bits(plcp1) });
+            let response_rate: u32 = match rate {
+                TxPhyRate::HrDsss(_) => rate.as_hardware_rate() as u32,
+                TxPhyRate::Ofdm(_) => 0xb,
+                TxPhyRate::Ht(ht_rate) => {
+                    if ht_rate.mcs_index() % 8 <= 2 {
+                        0xb
+                    } else {
+                        0x9
+                    }
+                }
+            };
+            // Keep the bits hal_init leaves in this register (0x0040_0020 on the S3). Bit 5 is
+            // the "PLCP2" bit the S2 driver sets for every transmission.
+            Self::regs_internal()
+                .plcp2(queue.hardware_slot())
+                .modify(|r, w| unsafe {
+                    w.bits(crate::s3_tx::tx_misc(
+                        r.bits(),
+                        response_rate as u8,
+                        interface,
+                    ))
+                });
+            return;
+        }
+        #[cfg(not(feature = "esp32s3"))]
         Self::regs_internal()
             .plcp1(queue.hardware_slot())
             .write(|w| unsafe {
@@ -1272,6 +1330,10 @@ impl LowLevelDriver {
     ///
     /// Currently this doesn't do much, except setting a bit with unknown meaning to one.
     pub fn set_plcp2(&self, queue: HardwareTxQueue) {
+        // On the ESP32-S3 this register is written by `set_plcp1`.
+        #[cfg(feature = "esp32s3")]
+        let _ = queue;
+        #[cfg(not(feature = "esp32s3"))]
         Self::regs_internal()
             .plcp2(queue.hardware_slot())
             .write(|w| w.unknown().set_bit());
@@ -1293,19 +1355,39 @@ impl LowLevelDriver {
         is_short_gi: bool,
         frame_length: usize,
     ) {
-        Self::regs_internal()
-            .ht_sig(queue.hardware_slot())
-            .write(|w| unsafe {
-                w.bits(
-                    (mcs as u32 & 0b111)
-                        | ((frame_length as u32 & 0xffff) << 8)
-                        | (0b111 << 24)
-                        | ((is_short_gi as u32) << 31),
-                )
-            });
-        Self::regs_internal()
-            .ht_unknown(queue.hardware_slot())
-            .write(|w| unsafe { w.bits(frame_length as u32 | 0x50000) });
+        #[cfg(feature = "esp32s3")]
+        {
+            // From mac_tx_set_htsig of the ESP32-S3 blob (non-STBC path).
+            Self::regs_internal()
+                .ht_sig(queue.hardware_slot())
+                .write(|w| unsafe { w.bits(crate::s3_tx::ht_sig(mcs, is_short_gi, frame_length)) });
+            Self::regs_internal()
+                .ht_unknown(queue.hardware_slot())
+                .write(|w| unsafe {
+                    w.bits(
+                        (frame_length as u32 & 0x7ffff) | 0x40_0000 | ((mcs as u32 & 0b111) << 28),
+                    )
+                });
+            Self::regs_internal()
+                .plcp2(queue.hardware_slot())
+                .modify(|r, w| unsafe { w.bits((r.bits() & 0xff3f_ffff) | 0x40_0000) });
+        }
+        #[cfg(not(feature = "esp32s3"))]
+        {
+            Self::regs_internal()
+                .ht_sig(queue.hardware_slot())
+                .write(|w| unsafe {
+                    w.bits(
+                        (mcs as u32 & 0b111)
+                            | ((frame_length as u32 & 0xffff) << 8)
+                            | (0b111 << 24)
+                            | ((is_short_gi as u32) << 31),
+                    )
+                });
+            Self::regs_internal()
+                .ht_unknown(queue.hardware_slot())
+                .write(|w| unsafe { w.bits(frame_length as u32 | 0x50000) });
+        }
     }
 
     // Crypto

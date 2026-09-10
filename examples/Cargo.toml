@@ -30,8 +30,21 @@ esp-rtos = { version = "0.3.0", features = ["embassy"] }
 esp-println = { version = "0.16.1", features = ["log-04"] }
 esp-bootloader-esp-idf = "0.5.0"
 ieee80211 = "0.5.9"
+foa = { version = "0.2.0", features = ["log"], optional = true }
+foa_sta = { version = "0.2.0", features = ["log"], optional = true }
+embassy-net = { version = "0.9.1", features = [
+    "proto-ipv4", "dhcpv4", "icmp", "auto-icmp-echo-reply", "medium-ethernet",
+], optional = true }
+smoltcp = { version = "0.13.1", default-features = false, features = ["log"], optional = true }
+
+[[bin]]
+name = "sta_smoke"
+path = "src/bin/sta_smoke.rs"
+required-features = ["foa-smoke"]
 
 [features]
+foa-smoke = ["dep:foa", "dep:foa_sta", "dep:embassy-net"]
+network-trace = ["foa-smoke", "dep:smoltcp", "embassy-net/log"]
 esp32 = [
     "esp-wifi-hal/esp32",
     "esp-hal/esp32",
@@ -47,6 +60,14 @@ esp32s2 = [
     "esp-bootloader-esp-idf/esp32s2",
 ]
 
+esp32s3 = [
+    "esp-wifi-hal/esp32s3",
+    "esp-hal/esp32s3",
+    "esp-rtos/esp32s3",
+    "esp-backtrace/esp32s3",
+    "esp-bootloader-esp-idf/esp32s3",
+]
+
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
@@ -60,3 +81,9 @@ incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
+
+[patch.crates-io]
+# FoA must use the driver under test too.
+esp-wifi-hal = { path = "../esp-wifi-hal" }
+# S3 Wi-Fi registers pending an upstream PAC release (0.35 compatibility branch).
+esp32s3 = { git = "https://github.com/matteius/esp-pacs", rev = "37b54bd9ad62de17b17a8d7984a2ace5e73d63dd" }

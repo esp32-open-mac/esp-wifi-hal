@@ -1,0 +1,665 @@
+{
+  "date": "2026-09-10",
+  "status": "experimental draft",
+  "board": {
+    "chip": "ESP32-S3",
+    "revision": "0.1",
+    "secure_boot": true,
+    "secure_download_mode": true,
+    "flash_encryption": false,
+    "application_offset": "0x20000",
+    "bootloader_written": false,
+    "partition_table_written": false,
+    "efuses_written": false
+  },
+  "toolchain": {
+    "esp_rust": "1.97.0.0",
+    "xtensa_gcc": "15.2.0_20250920",
+    "espflash": "4.6.0",
+    "esptool_espsecure": "4.11.0"
+  },
+  "dependencies": {
+    "esp_hal_example": "1.1.2",
+    "esp_phy": "0.2.0",
+    "esp_wifi_sys_esp32s3": "0.2.0",
+    "foa": "0.2.0",
+    "foa_sta": "0.2.0",
+    "embassy_net": "0.9.1",
+    "smoltcp": "0.13.1",
+    "pac_compatibility_version": "0.35.2",
+    "pac_revision": "37b54bd9ad62de17b17a8d7984a2ace5e73d63dd",
+    "pac_pr": "https://github.com/esp-rs/esp-pacs/pull/511"
+  },
+  "host_regressions": {
+    "c_groups": 10,
+    "rust_init_differential": 1,
+    "initial_register_patterns": 4,
+    "rust_tx": 3,
+    "rust_rx_and_addresses": 4,
+    "rust_dma": 4,
+    "smoltcp_neighbor_reproduction": 1,
+    "neighbor_reproduction_is_a_confirmed_limitation_not_a_fix": true
+  },
+  "build_checks": [
+    "ESP32 library check and minimal link",
+    "ESP32-S2 library check and minimal link",
+    "ESP32-S3 library check, wifi_smoke and sta_smoke link",
+    "PAC 0.35.2 and 0.36.0 generate/build"
+  ],
+  "source_files_sha256": {
+    "esp-wifi-hal/src/async_driver.rs": "d40e746b58a9e27b1c5229b75cd7d30eeff6fdbd1af48eb7283d2351573846e8",
+    "esp-wifi-hal/src/borrowed_buffer.rs": "0fa455f4f9b0717cc9e4feeb8873b71154892e0fc7d80765ab14ce6b3fd33600",
+    "esp-wifi-hal/src/crypto.rs": "14d8b072dd16907ac844051721d5a09fc07f37550cec331dbc156fa58324baf5",
+    "esp-wifi-hal/src/dma_list.rs": "60fefc820b3dadda14f12a89115813e6e4405105594520f8404a82397036ba0a",
+    "esp-wifi-hal/src/edca.rs": "e123ffd62594f7f0957c330f5656a8a040082f4f8cf16ffe6022aa274e5e867e",
+    "esp-wifi-hal/src/ffi.rs": "be1265bd494866c2a2c6f31e422edb190bb9b289dd407dcf32706c68d48bd4c5",
+    "esp-wifi-hal/src/lib.rs": "0f1f912d81ab02c1ae8b39947e6bcbb4aa1c572f4082d485ab1cbcb3780417ea",
+    "esp-wifi-hal/src/ll.rs": "29e856f13d19d204ef79223bde5f2f5e2a24d864f1eef0fafc530b2bb8e2d330",
+    "esp-wifi-hal/src/rates.rs": "a6c8070909c8407741f5ba99c6e6363b3b2ea6f72e83f32bc88505fefbd26ff9",
+    "esp-wifi-hal/src/s3_mac.rs": "492e0ea7ec638a81650ba82409d01370faa64743a1a2b3a7e6dd238655a06608",
+    "esp-wifi-hal/src/s3_rx.rs": "0f34a4a6e20ea3822c89529eabb5949fb39b900f8244df133f3403202f56da44",
+    "esp-wifi-hal/src/s3_tx.rs": "52fbe6c88d8c6f6918167a3dbff7d694ee4743811158216e2d680da1da971e67",
+    "esp-wifi-hal/src/sync.rs": "5e1bedf2a61c48683447a90a9ea2f09c9c9653c9c0c5f36b1af8e62dff6aefc1",
+    "esp-wifi-hal/build.rs": "cca3b1d6f63241a6aa8a5c0fc091d02e45d3cbeff234ebdcd0d337d1b5f1ba59",
+    "esp-wifi-hal/Cargo.toml": "aea5066b959de9c6b0215d25ebad813450ef6f72b4231b0cc0095fd5db17abd1",
+    "esp-wifi-hal/Cargo.lock": "5306e9adc642baab76a45d7aab575554b84c9beaf94e910afe2fa0b92a1769c3",
+    "examples/Cargo.toml": "997de5ec971d0df127c8941e5938c647a15de8034eb1d4de478f0eb7ad6f4740",
+    "examples/Cargo.lock": "89c09bd25b5620293626d801d59b2dc4111790745b49cab7e871e92f1ed320ab",
+    "examples/src/bin/sta_smoke.rs": "89b439eadf064cb72c8fba918e0dfd4f297a602e59febcc347f49b4f46a8a749",
+    "examples/src/bin/wifi_smoke.rs": "d3cc19cc679327e231fd29f89d3d6ba0cac4e62fbcd504b748e8cab0403fdbfb"
+  },
+  "runs": [
+    {
+      "name": "sta-three-cycle",
+      "phase": "initial Rust init; immediate host echoes",
+      "timestamp_utc": "20260910-172826",
+      "image_sha256": "e681ada67c298fc94d063d960c2f217a2602ffad9f19d612d660f219a3528a93",
+      "application_complete": true,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [],
+      "neighbor_pending_responses": 0,
+      "panic": false
+    },
+    {
+      "name": "sta-final",
+      "phase": "one-second host delay; before RX/DMA corrections",
+      "timestamp_utc": "20260910-174200",
+      "image_sha256": "0bd628ee87b6a1339585ebbcb9b4f48ca38446decb06738db5ada31f79295702",
+      "application_complete": true,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [],
+      "neighbor_pending_responses": 0,
+      "panic": false
+    },
+    {
+      "name": "sta-arp-trace",
+      "phase": "smoltcp ARP diagnosis; before DMA corrections",
+      "timestamp_utc": "20260910-175034",
+      "image_sha256": "f72608928cc34c75a499f1144904c0bca0c90db142de1276ebfd1c5653cf5697",
+      "application_complete": true,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [],
+      "neighbor_pending_responses": 2,
+      "panic": false
+    },
+    {
+      "name": "sta-gateway-trace",
+      "phase": "expanded gateway test; reception stopped before DMA corrections",
+      "timestamp_utc": "20260910-175436",
+      "image_sha256": "42e096541a906c01757bc59301d7f11ec3d8c7514a2cc51074b982a6ed6ae56c",
+      "application_complete": false,
+      "requested_cycles": 3,
+      "completed_cycles": 1,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 0,
+          "missing_sequences": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 0
+        }
+      ],
+      "neighbor_pending_responses": 0,
+      "panic": true,
+      "failure": "connection failed: UnableToFindEss"
+    },
+    {
+      "name": "sta-dma-trace",
+      "phase": "expanded gateway test; reception stopped in cycle 3 before DMA corrections",
+      "timestamp_utc": "20260910-180025",
+      "image_sha256": "36336508e766e944d896acaa0dd2e95a2b26057bfbf0044fc3af77237a742e6e",
+      "application_complete": false,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 0,
+          "missing_sequences": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 0
+        }
+      ],
+      "neighbor_pending_responses": 1,
+      "panic": true,
+      "failure": "gateway reply assertion or other application panic; see phase"
+    },
+    {
+      "name": "sta-dma-offset-trace",
+      "phase": "successful three-cycle control before DMA corrections",
+      "timestamp_utc": "20260910-180326",
+      "image_sha256": "ea0a40ab2da00e6986f9c8d155853a99d555c52e2d9022178da47770626ed846",
+      "application_complete": true,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 20
+        }
+      ],
+      "neighbor_pending_responses": 2,
+      "panic": false
+    },
+    {
+      "name": "sta-ten-cycle",
+      "phase": "offset/short-descriptor corrections; stale next pointers still present",
+      "timestamp_utc": "20260910-180757",
+      "image_sha256": "8ad492313f1d285948af80772ab7d597d4608a0f5bb4256a57f1396b6191573a",
+      "application_complete": false,
+      "requested_cycles": 10,
+      "completed_cycles": 5,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 4,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 5,
+          "sent": 20,
+          "received": 0,
+          "missing_sequences": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 4,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 5,
+          "sent": 20,
+          "received": 0
+        }
+      ],
+      "neighbor_pending_responses": 3,
+      "panic": true,
+      "failure": "connection failed: UnableToFindEss"
+    },
+    {
+      "name": "sta-tail-fix",
+      "phase": "ten-cycle test with descriptor detachment fix",
+      "timestamp_utc": "20260910-181417",
+      "image_sha256": "7b223d66252f348ffb6a241b0f6ec7accd13db967476c97258a232204b9bfdbd",
+      "application_complete": false,
+      "requested_cycles": 10,
+      "completed_cycles": 7,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 4,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 5,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 6,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 7,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 4,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 5,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 6,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 7,
+          "sent": 20,
+          "received": 20
+        }
+      ],
+      "neighbor_pending_responses": 6,
+      "panic": true,
+      "failure": "connection attempt exceeded 25-second timeout"
+    },
+    {
+      "name": "wifi-recovery",
+      "phase": "final RX exhaustion/recovery, OFDM TX and timer test",
+      "timestamp_utc": "20260910-181859",
+      "image_sha256": "79df239d180f0850bed4c2560c8887ff554c58c3def63ad9e1bd6c892473766d",
+      "application_complete": true,
+      "requested_cycles": null,
+      "completed_cycles": 0,
+      "host_to_device": [],
+      "device_to_gateway": [],
+      "neighbor_pending_responses": 0,
+      "panic": false,
+      "wifi_smoke": {
+        "received_frames": 6,
+        "ofdm_frames": 1,
+        "tx_complete": true,
+        "rx_exhausted": true,
+        "rx_recovered": true,
+        "mac_timer_advanced": true
+      }
+    },
+    {
+      "name": "sta-clean",
+      "phase": "final three-cycle build with info logging",
+      "timestamp_utc": "20260910-182039",
+      "image_sha256": "c653cc3f82f56afcc629046645ea32120136214cddd9fbd9abaa182c15d7d0a6",
+      "application_complete": true,
+      "requested_cycles": 3,
+      "completed_cycles": 3,
+      "host_to_device": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20,
+          "missing_sequences": []
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 19,
+          "missing_sequences": [
+            1
+          ]
+        }
+      ],
+      "device_to_gateway": [
+        {
+          "cycle": 1,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 2,
+          "sent": 20,
+          "received": 20
+        },
+        {
+          "cycle": 3,
+          "sent": 20,
+          "received": 20
+        }
+      ],
+      "neighbor_pending_responses": 0,
+      "panic": false
+    }
+  ],
+  "diagnosis": {
+    "first_host_ping": "smoltcp automatic ICMP reply discarded with NeighborPending until ARP resolves; reproduced on host without Wi-Fi",
+    "rx_queue": "completed short descriptors, S3 offset/status decoding and stale next pointers corrected; stale links reproduced in production queue host tests",
+    "test_direction": "C app sent to gateway; initial Rust test answered host; revised Rust test measures both separately"
+  },
+  "limitations": [
+    "Remaining PHY/ROM/auto-ACK/crypto/antenna/timer/coexistence helpers",
+    "Automatic smoltcp echo response is not queued during ARP resolution",
+    "Ten-cycle run after queue fixes timed out connecting cycle 8 after seven successful cycles",
+    "One board and one WPA2 access point",
+    "No AP/multiple-VIF/HT rate sweep/power saving/Bluetooth/CSI/FTM validation",
+    "Reconnect cycles keep MAC/PHY initialized; not full deinit/reinit",
+    "Host emulator tests complement hardware evidence, not equivalence proof"
+  ],
+  "link_checks": [
+    {
+      "name": "sta-tail-fix",
+      "elf_sha256": "4252c84259d35e19015796d7c609d4f1589aafef60e1de6eb778f1cb5f150b7d",
+      "blob_init_symbols_absent": [
+        "hal_init",
+        "mac_txrx_init",
+        "mac_rxbuf_init",
+        "mac_last_rxbuf_init"
+      ]
+    },
+    {
+      "name": "sta-clean",
+      "elf_sha256": "80ffc2f17fc7af293150fe0475de51975c3b3d55acfb32701f1a29a4ec4c9e01",
+      "blob_init_symbols_absent": [
+        "hal_init",
+        "mac_txrx_init",
+        "mac_rxbuf_init",
+        "mac_last_rxbuf_init"
+      ]
+    }
+  ]
+}

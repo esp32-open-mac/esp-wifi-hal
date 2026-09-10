@@ -8,11 +8,13 @@ The `critical_section` feature allows using the driver across cores. If it is di
 
 For further information see the docs.
 
-ESP32-S3 porting research is in [docs/esp32s3](docs/esp32s3/README.md): a reviewed
-MAC reference, register and ABI observations, host regressions, and an ESP-IDF
-hardware comparison. This does not yet add S3 support to the Rust crate.
+The experimental `esp32s3` feature adds S3 MAC initialization, RX/TX and hardware
+crypto integration. [S3 build and validation notes](docs/esp32s3/RUST.md) cover
+the required PAC patch, a bounded RX/TX example, and WPA2/DHCP testing with FoA.
+The [reviewed C reference](docs/esp32s3/README.md) records the initialization and
+register evidence behind the Rust port. PHY and several binary helpers remain.
 ## Building
-To set up a development environment follow the guide at https://docs.esp-rs.org/book/installation/index.html. Since this only works on the ESP32 and ESP32-S2 right now, only the Xtensa section is of interest.
+To set up a development environment follow the Xtensa section of https://docs.esp-rs.org/book/installation/index.html.
 To try one of these examples:
 1. Clone the repo
 2. Connect the ESP32

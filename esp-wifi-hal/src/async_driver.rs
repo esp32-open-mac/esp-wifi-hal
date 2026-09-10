@@ -302,7 +302,7 @@ pub trait CryptoControl: HasLowLevelDriver {
     fn dump_key_slot(&self, key_slot: usize) -> Result<(), OutOfBounds> {
         WiFi::validate_key_slot(key_slot)?;
 
-        let wifi = WIFI::regs();
+        let wifi = unsafe { LowLevelDriver::regs() };
         let crypto_key_slot = wifi.crypto_key_slot(key_slot);
 
         let mut key_bytes = [0x00u8; 32];
@@ -352,7 +352,7 @@ pub trait CryptoControl: HasLowLevelDriver {
     }
     /// Dump the values of the crypto control registers.
     fn dump_crypto_config(&self) {
-        let wifi = WIFI::regs();
+        let wifi = unsafe { LowLevelDriver::regs() };
         for (i, interface_crypto_control) in wifi
             .crypto_control()
             .interface_crypto_control_iter()
@@ -1077,23 +1077,27 @@ mod private {
     impl AsyncTransmitExt for LowLevelDriver {}
 }
 fn is_rx_frame_valid(dma_descriptor: &mut DmaDescriptor) -> bool {
-    // Just to be safe.
-    let length_valid = RX_BUFFER_SIZE >= dma_descriptor.len();
-    // Sometimes the received buffer is length zero, so we check that there's room for the RX header.
-    let has_phy_header = dma_descriptor.len() >= BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
-
-    // SAFETY: We validated, that the length can't be larger, than the pre allocated size for the buffer.
-    let buffer =
-        unsafe { core::slice::from_raw_parts(dma_descriptor.buffer, dma_descriptor.len()) };
-
-    let field_0x18 = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) as usize;
-    // NOTE: These names are a lot more on the side of guesses, than other names here.
-    let l_sig_len = field_0x18 & 0xfff;
-    let ht_sig_len = (field_0x18 >> 0xc) & 0xfff;
-
-    let length_fields_valid = l_sig_len < dma_descriptor.len() && ht_sig_len < dma_descriptor.len();
-
-    length_valid && has_phy_header && length_fields_valid
+    let length = dma_descriptor.len();
+    let header_length = BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
+    // Reject empty/oversized descriptors before constructing a slice or reading fields.
+    if length > RX_BUFFER_SIZE || length < header_length || dma_descriptor.buffer.is_null() {
+        return false;
+    }
+    let buffer = unsafe { core::slice::from_raw_parts(dma_descriptor.buffer, length) };
+    #[cfg(feature = "esp32s3")]
+    {
+        // S3's 48-byte RX header stores SIG_LEN in the final word. The S2 word
+        // at 0x18 describes different fields on S3 and must not gate OFDM RX.
+        const {
+            assert!(BorrowedBuffer::RX_CONTROL_HEADER_LENGTH == crate::s3_rx::CONTROL_HEADER_LENGTH)
+        };
+        crate::s3_rx::valid_length(buffer)
+    }
+    #[cfg(not(feature = "esp32s3"))]
+    {
+        let lengths = u32::from_le_bytes(buffer[24..28].try_into().unwrap()) as usize;
+        (lengths & 0xfff) < length && ((lengths >> 12) & 0xfff) < length
+    }
 }
 /// A trait implemented by structs, that allow asynchronously receiving frames.
 pub trait AsyncReceive<'res>: HasDmaList<'res> {
@@ -1119,6 +1123,9 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                         trace!("Discarding frame due to invalid header.");
                         self.dma_list_ref()
                             .lock(|dma_list| dma_list.borrow_mut().recycle(current));
+                        // Another completed frame may share this interrupt.
+                        // Drain it before waiting for a new signal.
+                        continue;
                     }
                 }
                 WIFI_RX_SIGNAL_QUEUE.next().await;

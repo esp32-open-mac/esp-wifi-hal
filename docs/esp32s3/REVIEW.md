@@ -121,7 +121,9 @@ The map was checked for the replacement archive path and absence of the stock
 `hal_mac.o`. All 29 other archive members were compared byte-for-byte.
 See [the recorded validation summary](validation-summary.json) for source/image
 hashes, retained symbols and per-cycle results.
-This result is neither a full Wi-Fi deblob nor a working Rust esp-wifi-hal S3 port.
+This C comparison alone establishes neither a full Wi-Fi deblob nor Rust driver
+support. The subsequent Rust port and its separate hardware results are in
+[RUST.md](RUST.md).
 CSI, FTM hardware exchanges, mesh, AP mode, power saving and mixed Bluetooth/Wi-Fi
 coexistence still need dedicated device tests.
 
@@ -132,9 +134,8 @@ The existing [C3 port PR #22](https://github.com/esp32-open-mac/esp-wifi-hal/pul
 already establishes a pattern for chip-specific register layouts, OS callbacks,
 TSF and RX validation. Coordinate the S3 port with that work.
 
-A useful first PR can add this reviewed reference and its evidence. Then add the
-S3 Wi-Fi SVD/PAC mapping, followed by the Rust chip feature and initialization
-translation with FoA tests. The current S3 PAC lacks the `wifi` module expected
-by this driver, so copying the S2 feature and changing a base address is not
-sufficient. PHY ownership, RX descriptor layout, PLCP1/2, TX status, crypto and
-power interrupts need explicit S3 checks before claiming a complete port.
+The accompanying Rust port adds the chip feature, initialization translation,
+S3 RX layout and TX encoding, with FoA station tests. Its separate
+[PAC draft](https://github.com/esp-rs/esp-pacs/pull/511) supplies the missing Wi-Fi
+register block. The port remains experimental: dedicated power-management,
+coexistence, HT rate-sweep and multi-interface tests are still outstanding.

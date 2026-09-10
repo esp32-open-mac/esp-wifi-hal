@@ -1,0 +1,10 @@
+[package]
+name = "s3-smoltcp-neighbor-repro"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+smoltcp = { version = "=0.13.1", default-features = false, features = [
+    "std", "medium-ethernet", "proto-ipv4", "socket-icmp", "auto-icmp-echo-reply",
+] }

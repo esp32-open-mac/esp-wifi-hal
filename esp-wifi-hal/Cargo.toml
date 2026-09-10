@@ -92,5 +92,5 @@ log = ["dep:log", "defmt-or-log/log", "esp-phy/log-04", "esp-sync/log-04"]
 critical_section = []
 
 [patch.crates-io]
-# esp32c3 PAC with the reverse engineered WIFI block, generated from esp-pacs
-esp32c3 = { path = "../../esp-pacs/esp32c3" }
+# esp32c3 PAC with the Wi-Fi MAC register block (esp-rs/esp-pacs#510), on top of the 0.32.3 release.
+esp32c3 = { git = "https://github.com/okhsunrog/esp-pacs.git", rev = "9be190016260ef195c97f7aa5aa7c576a1646890" }

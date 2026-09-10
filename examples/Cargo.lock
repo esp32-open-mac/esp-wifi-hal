@@ -1034,6 +1034,7 @@ dependencies = [
 [[package]]
 name = "esp32c3"
 version = "0.32.3"
+source = "git+https://github.com/okhsunrog/esp-pacs.git?rev=9be190016260ef195c97f7aa5aa7c576a1646890#9be190016260ef195c97f7aa5aa7c576a1646890"
 dependencies = [
  "vcell",
 ]

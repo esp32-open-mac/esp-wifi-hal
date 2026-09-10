@@ -167,7 +167,7 @@ window so gateway traffic cannot prime that window's ARP state.
 
 To reproduce the board-side diagnosis, enable `network-trace` instead of
 `foa-smoke` and build with `ESP_LOG=info,smoltcp=trace,embassy_net=debug`.
-This leaves FoA security debug logging disabled. The draft does not change
+This leaves FoA security debug logging disabled. The port does not change
 smoltcp's automatic responder or disguise missing replies with warm-up pings.
 
 An extended test also exposed intermittent loss of all reception. Two exploratory
@@ -207,5 +207,5 @@ separately.
 
 Hardware coverage is one board and one WPA2 access point. AP mode, multiple VIFs,
 HT rate/short-GI sweeps, power saving, Bluetooth coexistence, CSI, FTM exchanges
-and long-duration reliability remain unvalidated. Keep the port draft while the
-PAC/API shape and these limits are reviewed.
+and long-duration reliability remain unvalidated. The port is ready for review
+as experimental support; the PAC/API shape and these limits remain review items.

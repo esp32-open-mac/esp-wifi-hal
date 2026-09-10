@@ -136,6 +136,6 @@ TSF and RX validation. Coordinate the S3 port with that work.
 
 The accompanying Rust port adds the chip feature, initialization translation,
 S3 RX layout and TX encoding, with FoA station tests. Its separate
-[PAC draft](https://github.com/esp-rs/esp-pacs/pull/511) supplies the missing Wi-Fi
+[PAC PR](https://github.com/esp-rs/esp-pacs/pull/511) supplies the missing Wi-Fi
 register block. The port remains experimental: dedicated power-management,
 coexistence, HT rate-sweep and multi-interface tests are still outstanding.

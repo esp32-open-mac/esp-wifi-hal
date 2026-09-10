@@ -203,9 +203,9 @@ interrupt_cause_struct! {
         /// A TBTT was reached or is about to be reached.
         ///
         /// NOTE: This is an unconfirmed assumption.
-        tbtt => [@chip(esp32s2) 0x1e],
+        tbtt => [@chip(esp32s2) 0x1e, @chip(esp32c3) 0x1e],
         /// We don't know them meaning of this yet.
-        tsf_timer => [@chip(esp32s2) 0x1e0]
+        tsf_timer => [@chip(esp32s2) 0x1e0, @chip(esp32c3) 0x1e0]
     }
 }
 
@@ -1162,19 +1162,15 @@ impl LowLevelDriver {
             .pmd(queue.hardware_slot())
             .read()
             .bits();
-        // The bit layout of PMD on the ESP32-C3 is not known yet (hal_mac_get_txq_pmd only
-        // extracts bits 16..23), so report success and log the raw value.
-        #[cfg(feature = "esp32c3")]
-        {
-            trace!("PMD: {:08x}", pmd);
-            return Ok(());
-        }
-        #[cfg(not(feature = "esp32c3"))]
+        // The layout is the same on all supported chips: `lmacProcessTxComplete` switches on
+        // bits 12..15 and passes bits 0..7 as the sub error to `lmacProcessTxRtsError` and
+        // `lmacProcessTxError`. On the ESP32-C3 `hal_mac_get_txq_pmd` only masks off bit 24.
+        // Bits 16..23 look like the RSSI of the response frame: around -40 dBm when an ACK
+        // arrived and around -90 dBm (noise floor) on a timeout.
+        trace!("PMD: {:08x}", pmd);
         let error = ((pmd >> 0xc) & 0xf) as u8;
-        #[cfg(not(feature = "esp32c3"))]
         let sub_error = (pmd & 0xff) as u8;
 
-        #[cfg(not(feature = "esp32c3"))]
         match error {
             0 => Ok(()),
             1 => {
@@ -1378,7 +1374,9 @@ impl LowLevelDriver {
             Self::regs_internal()
                 .ht_unknown(queue.hardware_slot())
                 .write(|w| unsafe {
-                    w.bits((frame_length as u32 & 0x7ffff) | 0x40_0000 | ((mcs as u32 & 0b111) << 28))
+                    w.bits(
+                        (frame_length as u32 & 0x7ffff) | 0x40_0000 | ((mcs as u32 & 0b111) << 28),
+                    )
                 });
             Self::regs_internal()
                 .plcp2(queue.hardware_slot())

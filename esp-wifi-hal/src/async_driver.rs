@@ -1095,7 +1095,19 @@ fn is_rx_frame_valid(dma_descriptor: &mut DmaDescriptor) -> bool {
     let l_sig_len = field_0x18 & 0xfff;
     let ht_sig_len = (field_0x18 >> 0xc) & 0xfff;
 
+    #[cfg(not(feature = "esp32c3"))]
     let length_fields_valid = l_sig_len < dma_descriptor.len() && ht_sig_len < dma_descriptor.len();
+    // The RX control header of the ESP32-C3 is 48 bytes and the word at 0x18 is not the length
+    // word (it rejected every OFDM frame). Validate the `sig_len` field of the header instead, so
+    // that the trailer length calculation of `BorrowedBuffer` can't underflow.
+    #[cfg(feature = "esp32c3")]
+    let length_fields_valid = {
+        let _ = (l_sig_len, ht_sig_len);
+        let header_len = BorrowedBuffer::RX_CONTROL_HEADER_LENGTH;
+        let sig_len = (u32::from_le_bytes(buffer[header_len - 4..header_len].try_into().unwrap())
+            & 0xfff) as usize;
+        has_phy_header && sig_len >= dma_descriptor.len() - header_len
+    };
 
     length_valid && has_phy_header && length_fields_valid
 }

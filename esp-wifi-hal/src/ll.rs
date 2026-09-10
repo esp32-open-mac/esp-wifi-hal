@@ -182,7 +182,7 @@ interrupt_cause_struct! {
         /// A frame was received.
         ///
         /// We don't know, what the individual bits mean, but this works.
-        rx => [0x100020, @chip(esp32) 0x4],
+        rx => [0x100020, @chip(esp32) 0x4, @chip(esp32c3) 0x1204000],
         /// A frame was transmitted successfully.
         tx_success => 0x80,
         /// A transmission timeout occured.
@@ -1162,9 +1162,19 @@ impl LowLevelDriver {
             .pmd(queue.hardware_slot())
             .read()
             .bits();
+        // The bit layout of PMD on the ESP32-C3 is not known yet (hal_mac_get_txq_pmd only
+        // extracts bits 16..23), so report success and log the raw value.
+        #[cfg(feature = "esp32c3")]
+        {
+            trace!("PMD: {:08x}", pmd);
+            return Ok(());
+        }
+        #[cfg(not(feature = "esp32c3"))]
         let error = ((pmd >> 0xc) & 0xf) as u8;
+        #[cfg(not(feature = "esp32c3"))]
         let sub_error = (pmd & 0xff) as u8;
 
+        #[cfg(not(feature = "esp32c3"))]
         match error {
             0 => Ok(()),
             1 => {
@@ -1258,6 +1268,44 @@ impl LowLevelDriver {
         interface: usize,
         key_slot: Option<u8>,
     ) {
+        #[cfg(feature = "esp32c3")]
+        {
+            // Layout from mac_tx_set_plcp1 of the ESP32-C3 blob: LEN 0..11, RATE 12..16,
+            // KEY_SLOT_ID 17.., IS_80211_N 25. The interface ID and the rate the hardware expects
+            // the response at live in the "misc" slot register (PAC: PLCP2).
+            let plcp1 = (frame_length as u32 & 0xfff)
+                | ((rate.as_hardware_rate() as u32 & 0x1f) << 12)
+                | ((key_slot.unwrap_or_default() as u32) << 17)
+                | ((matches!(rate, TxPhyRate::Ht(_)) as u32) << 25);
+            Self::regs_internal()
+                .plcp1(queue.hardware_slot())
+                .write(|w| unsafe { w.bits(plcp1) });
+            let response_rate: u32 = match rate {
+                TxPhyRate::HrDsss(_) => rate.as_hardware_rate() as u32,
+                TxPhyRate::Ofdm(_) => 0xb,
+                TxPhyRate::Ht(ht_rate) => {
+                    if ht_rate.mcs_index() % 8 <= 2 {
+                        0xb
+                    } else {
+                        0x9
+                    }
+                }
+            };
+            // Keep the bits hal_init leaves in this register (0x0040_0020 on the C3). Bit 5 is
+            // the "PLCP2" bit the S2 driver sets for every transmission.
+            Self::regs_internal()
+                .plcp2(queue.hardware_slot())
+                .modify(|r, w| unsafe {
+                    w.bits(
+                        (r.bits() & !((0xff << 6) | (0x3 << 28)))
+                            | (1 << 5)
+                            | (response_rate << 6)
+                            | ((interface as u32 & 0x3) << 28),
+                    )
+                });
+            return;
+        }
+        #[allow(unreachable_code)]
         Self::regs_internal()
             .plcp1(queue.hardware_slot())
             .write(|w| unsafe {
@@ -1285,6 +1333,13 @@ impl LowLevelDriver {
     ///
     /// Currently this doesn't do much, except setting a bit with unknown meaning to one.
     pub fn set_plcp2(&self, queue: HardwareTxQueue) {
+        // On the ESP32-C3 this register is written by `set_plcp1`.
+        #[cfg(feature = "esp32c3")]
+        {
+            let _ = queue;
+            return;
+        }
+        #[allow(unreachable_code)]
         Self::regs_internal()
             .plcp2(queue.hardware_slot())
             .write(|w| w.unknown().set_bit());
@@ -1306,6 +1361,31 @@ impl LowLevelDriver {
         is_short_gi: bool,
         frame_length: usize,
     ) {
+        #[cfg(feature = "esp32c3")]
+        {
+            // From mac_tx_set_htsig of the ESP32-C3 blob (non-STBC path).
+            Self::regs_internal()
+                .ht_sig(queue.hardware_slot())
+                .write(|w| unsafe {
+                    w.bits(
+                        (mcs as u32 & 0b111)
+                            | ((is_short_gi as u32) << 7)
+                            | ((frame_length as u32 & 0xffff) << 8)
+                            | (0b111 << 24)
+                            | (((mcs >= 8) as u32) << 31),
+                    )
+                });
+            Self::regs_internal()
+                .ht_unknown(queue.hardware_slot())
+                .write(|w| unsafe {
+                    w.bits((frame_length as u32 & 0x7ffff) | 0x40_0000 | ((mcs as u32 & 0b111) << 28))
+                });
+            Self::regs_internal()
+                .plcp2(queue.hardware_slot())
+                .modify(|r, w| unsafe { w.bits((r.bits() & 0xff3f_ffff) | 0x40_0000) });
+            return;
+        }
+        #[allow(unreachable_code)]
         Self::regs_internal()
             .ht_sig(queue.hardware_slot())
             .write(|w| unsafe {

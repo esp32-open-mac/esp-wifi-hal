@@ -108,6 +108,8 @@ pub mod prelude {
         ChannelAccessError, ControlFrameFilterConfig, EdcaAccessCategory, HardwareTxQueue,
         INTERFACE_COUNT, KEY_SLOT_COUNT, MacProtocolError, RxFilterBank,
     };
+    #[cfg(tsf_timer_present)]
+    pub use crate::ll::TSF_TIMER_COUNT;
     pub use crate::rates::*;
     pub use crate::sync::DropGuard;
 }

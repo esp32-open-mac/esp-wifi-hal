@@ -22,6 +22,8 @@ use crate::{
     dma_list::DmaList,
     sync::{HardwareTxResultSignal, SignalQueue},
 };
+#[cfg(tsf_timer_present)]
+use crate::{ll::TSF_TIMER_COUNT, sync::EventSignal};
 
 #[handler]
 fn mac_handler() {
@@ -63,9 +65,32 @@ fn mac_handler() {
 #[cfg(pwr_interrupt_present)]
 #[handler]
 fn pwr_handler() {
-    let _cause = unsafe { LowLevelDriver::get_and_clear_pwr_interrupt_cause() };
-    // We don't do anything yet.
+    let cause = unsafe { LowLevelDriver::get_and_clear_pwr_interrupt_cause() };
+    #[cfg(tsf_timer_present)]
+    {
+        for (timer, signal) in TSF_TIMER_SIGNALS.iter().enumerate() {
+            if cause.tsf_timer_fired(timer) {
+                signal.signal();
+            }
+        }
+        for (interface, signal) in TBTT_SIGNALS.iter().enumerate() {
+            if cause.tbtt_of_interface(interface) {
+                signal.signal();
+            }
+        }
+    }
+    #[cfg(not(tsf_timer_present))]
+    let _ = cause;
 }
+
+/// Signaled, when a TSF timer reaches its target.
+#[cfg(tsf_timer_present)]
+static TSF_TIMER_SIGNALS: [EventSignal; TSF_TIMER_COUNT] =
+    [const { EventSignal::new() }; TSF_TIMER_COUNT];
+/// Signaled, when the TBTT of an interface is reached.
+#[cfg(tsf_timer_present)]
+static TBTT_SIGNALS: [EventSignal; INTERFACE_COUNT] =
+    [const { EventSignal::new() }; INTERFACE_COUNT];
 
 /// Tracks the number of frames, that are still in the RX queue.
 static WIFI_RX_SIGNAL_QUEUE: SignalQueue = SignalQueue::new();
@@ -211,6 +236,88 @@ pub trait ChannelControl: HasLowLevelDriver {
         unsafe { self.ll_driver_ref() }.set_channel(channel_number);
         CURRENT_CHANNEL.store(channel_number, Ordering::Relaxed);
         Ok(())
+    }
+}
+/// Provides control over the TSF counters, the TSF timers and the TBTT generators.
+///
+/// All of these live in the PWR block of the MAC and report through the PWR interrupt.
+#[cfg(tsf_timer_present)]
+pub trait TsfControl: HasLowLevelDriver {
+    /// Read the TSF counter of an interface.
+    fn tsf_time(&self, interface: usize) -> Result<u64, OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        Ok(unsafe { self.ll_driver_ref() }.tsf_time(interface))
+    }
+    /// Load the TSF counter of an interface.
+    fn set_tsf_time(&mut self, interface: usize, time: u64) -> Result<(), OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        unsafe { self.ll_driver_ref() }.set_tsf_time(interface, time);
+        Ok(())
+    }
+    /// Start or stop the TSF counter of an interface.
+    fn set_tsf_enabled(&mut self, interface: usize, enabled: bool) -> Result<(), OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        unsafe { self.ll_driver_ref() }.set_tsf_enabled(interface, enabled);
+        Ok(())
+    }
+    /// Arm a TSF timer, so it fires when the low 32 bits of the TSF reach `target`.
+    ///
+    /// A previously pending event of that timer is discarded.
+    fn set_tsf_timer(&mut self, timer: usize, target: u32) -> Result<(), OutOfBounds> {
+        WiFi::validate_tsf_timer(timer)?;
+        let ll_driver = unsafe { self.ll_driver_ref() };
+        ll_driver.set_tsf_timer_enabled(timer, false);
+        TSF_TIMER_SIGNALS[timer].reset();
+        ll_driver.set_tsf_timer_target(timer, target);
+        ll_driver.set_tsf_timer_enabled(timer, true);
+        Ok(())
+    }
+    /// Disarm a TSF timer.
+    fn cancel_tsf_timer(&mut self, timer: usize) -> Result<(), OutOfBounds> {
+        WiFi::validate_tsf_timer(timer)?;
+        unsafe { self.ll_driver_ref() }.set_tsf_timer_enabled(timer, false);
+        TSF_TIMER_SIGNALS[timer].reset();
+        Ok(())
+    }
+    /// Wait until the TSF timer fires.
+    fn wait_for_tsf_timer(
+        &self,
+        timer: usize,
+    ) -> Result<impl Future<Output = ()> + Send + Sync + use<'_, Self>, OutOfBounds> {
+        WiFi::validate_tsf_timer(timer)?;
+        Ok(TSF_TIMER_SIGNALS[timer].wait())
+    }
+    /// Configure the TBTT generator of an interface.
+    ///
+    /// `interval` is the beacon interval in TUs and `early_time` how many microseconds before
+    /// the TBTT the event fires. TBTTs occur whenever the TSF counter of the interface is a
+    /// multiple of the interval, so load the TSF counter to control the phase.
+    fn set_tbtt(
+        &mut self,
+        interface: usize,
+        interval: u16,
+        early_time: u16,
+    ) -> Result<(), OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        unsafe { self.ll_driver_ref() }.set_tbtt(interface, interval, early_time);
+        Ok(())
+    }
+    /// Start or stop the TBTT generator of an interface.
+    fn set_tbtt_enabled(&mut self, interface: usize, enabled: bool) -> Result<(), OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        unsafe { self.ll_driver_ref() }.set_tbtt_enabled(interface, enabled);
+        if !enabled {
+            TBTT_SIGNALS[interface].reset();
+        }
+        Ok(())
+    }
+    /// Wait until the next TBTT of the interface.
+    fn wait_for_tbtt(
+        &self,
+        interface: usize,
+    ) -> Result<impl Future<Output = ()> + Send + Sync + use<'_, Self>, OutOfBounds> {
+        WiFi::validate_interface(interface)?;
+        Ok(TBTT_SIGNALS[interface].wait())
     }
 }
 /// Provides control over hardware key slots.
@@ -1447,6 +1554,16 @@ impl<'res> WiFi<'res> {
         })
     }
     /// Check if they key slot is valid.
+    /// Check that the TSF timer index is in bounds.
+    #[cfg(tsf_timer_present)]
+    pub const fn validate_tsf_timer(timer: usize) -> Result<(), OutOfBounds> {
+        if timer < TSF_TIMER_COUNT {
+            Ok(())
+        } else {
+            Err(OutOfBounds)
+        }
+    }
+    /// Check that the key slot index is in bounds.
     pub const fn validate_key_slot(key_slot: usize) -> Result<(), OutOfBounds> {
         if key_slot < KEY_SLOT_COUNT {
             Ok(())
@@ -1462,6 +1579,8 @@ impl HasLowLevelDriver for WiFi<'_> {
 }
 impl ChannelControl for WiFi<'_> {}
 impl CryptoControl for WiFi<'_> {}
+#[cfg(tsf_timer_present)]
+impl TsfControl for WiFi<'_> {}
 
 impl<'res> HasDmaList<'res> for WiFi<'res> {
     fn dma_list_ref(&self) -> &'res blocking_mutex::Mutex<DefaultRawMutex, RefCell<DmaList>> {

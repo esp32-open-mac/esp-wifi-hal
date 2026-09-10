@@ -200,12 +200,25 @@ interrupt_cause_struct! {
 interrupt_cause_struct! {
     /// Cause for the power interrupt.
     PwrInterruptCause => {
-        /// A TBTT was reached or is about to be reached.
+        /// A TBTT of one of the interfaces was reached or is about to be reached.
         ///
-        /// NOTE: This is an unconfirmed assumption.
+        /// Interface `n` uses bit `4 - n`.
         tbtt => [@chip(esp32s2) 0x1e, @chip(esp32c3) 0x1e],
-        /// We don't know them meaning of this yet.
+        /// One of the TSF timers reached its target.
+        ///
+        /// Timer `n` uses bit `8 - n`.
         tsf_timer => [@chip(esp32s2) 0x1e0, @chip(esp32c3) 0x1e0]
+    }
+}
+#[cfg(tsf_timer_present)]
+impl PwrInterruptCause {
+    /// Was the TBTT of the specified interface reached.
+    pub const fn tbtt_of_interface(&self, interface: usize) -> bool {
+        interface < INTERFACE_COUNT && self.0 & (0x10 >> interface) != 0
+    }
+    /// Did the specified TSF timer reach its target.
+    pub const fn tsf_timer_fired(&self, timer: usize) -> bool {
+        timer < TSF_TIMER_COUNT && self.0 & (0x100 >> timer) != 0
     }
 }
 
@@ -503,6 +516,9 @@ impl From<EdcaAccessCategory> for HardwareTxQueue {
 #[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32c3"))]
 /// The number of "interfaces" supported by the hardware.
 pub const INTERFACE_COUNT: usize = 4;
+/// The number of TSF timers the hardware has.
+#[cfg(tsf_timer_present)]
+pub const TSF_TIMER_COUNT: usize = 4;
 
 /// The number of key slots the hardware has.
 pub const KEY_SLOT_COUNT: usize = 25;
@@ -1625,6 +1641,137 @@ impl LowLevelDriver {
     pub fn run_power_control(&self) {
         unsafe {
             tx_pwctrl_background(1, 0);
+        }
+    }
+}
+
+// TSF, TSF timers and TBTT.
+//
+// Register usage derived from the `tsf_hal_*` functions of the ESP32-C3 blob. Timer and TBTT
+// events arrive through the PWR interrupt.
+#[cfg(tsf_timer_present)]
+impl LowLevelDriver {
+    /// Read the TSF counter of an interface.
+    ///
+    /// The counter is latched, read and unlatched, like `tsf_hal_get_counter_value` does.
+    pub fn tsf_time(&self, interface: usize) -> u64 {
+        let regs = Self::regs_internal();
+        let bit = 1u8 << interface;
+        regs.tsf_ctrl()
+            .modify(|r, w| unsafe { w.latch().bits(r.latch().bits() | bit) });
+        let low = regs.tsf_time_low().read().bits();
+        let high = regs.tsf_time_high().read().bits();
+        regs.tsf_ctrl()
+            .modify(|r, w| unsafe { w.latch().bits(r.latch().bits() & !bit) });
+        (high as u64) << 32 | low as u64
+    }
+    /// Load the TSF counter of an interface.
+    pub fn set_tsf_time(&self, interface: usize, time: u64) {
+        let regs = Self::regs_internal();
+        regs.tsf_load_low()
+            .write(|w| unsafe { w.bits(time as u32) });
+        regs.tsf_load_high()
+            .write(|w| unsafe { w.bits((time >> 32) as u32) });
+        regs.tsf_ctrl()
+            .modify(|r, w| unsafe { w.load().bits(r.load().bits() | 1 << interface) });
+    }
+    /// Is the TSF counter of the interface running.
+    pub fn tsf_enabled(&self, interface: usize) -> bool {
+        Self::regs_internal()
+            .tsf_cfg(interface)
+            .read()
+            .tsf_enable()
+            .bit_is_set()
+    }
+    /// Start or stop the TSF counter of an interface.
+    ///
+    /// Bits 27 and 28 are set and cleared together with the enable bit, since the blob does so
+    /// and their meaning is unknown.
+    pub fn set_tsf_enabled(&self, interface: usize, enabled: bool) {
+        Self::regs_internal()
+            .tsf_cfg(interface)
+            .modify(|_, w| unsafe {
+                w.tsf_enable()
+                    .bit(enabled)
+                    .tsf_enable_aux()
+                    .bits(if enabled { 0b11 } else { 0 })
+            });
+    }
+    /// Set the target of a TSF timer.
+    ///
+    /// The target is compared against the low 32 bits of the TSF.
+    pub fn set_tsf_timer_target(&self, timer: usize, target: u32) {
+        Self::regs_internal()
+            .tsf_timer_target(timer)
+            .write(|w| unsafe { w.bits(target) });
+    }
+    /// Get the target of a TSF timer.
+    pub fn tsf_timer_target(&self, timer: usize) -> u32 {
+        Self::regs_internal().tsf_timer_target(timer).read().bits()
+    }
+    /// Start or stop a TSF timer and unmask or mask its PWR interrupt.
+    pub fn set_tsf_timer_enabled(&self, timer: usize, enabled: bool) {
+        let regs = Self::regs_internal();
+        let bit = 0x100u32 >> timer;
+        if enabled {
+            // Discard a stale event before unmasking, like `tsf_hal_set_timer_intr_enable`.
+            regs.pwr_interrupt()
+                .pwr_int_clear()
+                .write(|w| unsafe { w.bits(bit) });
+            regs.pwr_int_enable()
+                .modify(|r, w| unsafe { w.bits(r.bits() | bit) });
+            regs.tsf_timer_cfg(timer)
+                .modify(|_, w| w.enable().set_bit());
+        } else {
+            regs.tsf_timer_cfg(timer)
+                .modify(|_, w| w.enable().clear_bit());
+            regs.pwr_int_enable()
+                .modify(|r, w| unsafe { w.bits(r.bits() & !bit) });
+        }
+    }
+    /// Configure the TBTT generator of an interface.
+    ///
+    /// `interval` is the beacon interval in TUs and `early_time` is how many microseconds before
+    /// the TBTT the event fires. The meaning of `early_time` is derived from the name
+    /// `tsf_hal_set_tbtt_early_time` only.
+    ///
+    /// TBTTs occur whenever the TSF counter of the interface is a multiple of the interval, as
+    /// 802.11 defines them, so the phase is controlled by loading the TSF counter.
+    pub fn set_tbtt(&self, interface: usize, interval: u16, early_time: u16) {
+        Self::regs_internal()
+            .tbtt_cfg(interface)
+            .write(|w| unsafe { w.interval().bits(interval).early_time().bits(early_time) });
+    }
+    /// Set the TBTT start time of an interface.
+    ///
+    /// The blob writes the TSF time of the most recent TBTT here (only the low 26 bits). It does
+    /// not affect when TBTT events fire, so its purpose is unknown.
+    pub fn set_tbtt_start_time(&self, interface: usize, start_time: u32) {
+        let regs = Self::regs_internal();
+        regs.tbtt_start()
+            .write(|w| unsafe { w.start_time().bits(start_time & 0x3ff_ffff) });
+        regs.tsf_ctrl().modify(|r, w| unsafe {
+            w.load_tbtt_start()
+                .bits(r.load_tbtt_start().bits() | 1 << interface)
+        });
+    }
+    /// Start or stop the TBTT generator of an interface and unmask or mask its PWR interrupt.
+    pub fn set_tbtt_enabled(&self, interface: usize, enabled: bool) {
+        let regs = Self::regs_internal();
+        let bit = 0x10u32 >> interface;
+        if enabled {
+            regs.pwr_interrupt()
+                .pwr_int_clear()
+                .write(|w| unsafe { w.bits(bit) });
+            regs.pwr_int_enable()
+                .modify(|r, w| unsafe { w.bits(r.bits() | bit) });
+            regs.tsf_cfg(interface)
+                .modify(|_, w| w.tbtt_enable().set_bit());
+        } else {
+            regs.tsf_cfg(interface)
+                .modify(|_, w| w.tbtt_enable().clear_bit());
+            regs.pwr_int_enable()
+                .modify(|r, w| unsafe { w.bits(r.bits() & !bit) });
         }
     }
 }

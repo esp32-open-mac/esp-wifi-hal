@@ -81,6 +81,10 @@ cfg_select! {
         use esp32s2 as esp_pac;
         use esp_wifi_sys_esp32s2 as esp_wifi_sys;
     }
+    feature = "esp32c3" => {
+        use esp32c3 as esp_pac;
+        use esp_wifi_sys_esp32c3 as esp_wifi_sys;
+    }
     _ => {
         compile_error!("Adjust this for a new chip.");
     }

@@ -46,6 +46,13 @@ esp32s2 = [
     "esp-backtrace/esp32s2",
     "esp-bootloader-esp-idf/esp32s2",
 ]
+esp32c3 = [
+    "esp-wifi-hal/esp32c3",
+    "esp-hal/esp32c3",
+    "esp-rtos/esp32c3",
+    "esp-backtrace/esp32c3",
+    "esp-bootloader-esp-idf/esp32c3",
+]
 
 [profile.dev]
 # Rust debug is too slow.
@@ -60,3 +67,6 @@ incremental = false
 lto = 'fat'
 opt-level = 's'
 overflow-checks = false
+
+[patch.crates-io]
+esp32c3 = { path = "../../esp-pacs/esp32c3" }

@@ -302,7 +302,9 @@ pub trait CryptoControl: HasLowLevelDriver {
     fn dump_key_slot(&self, key_slot: usize) -> Result<(), OutOfBounds> {
         WiFi::validate_key_slot(key_slot)?;
 
-        let wifi = WIFI::regs();
+        // The PAC register block; on chips where esp-hal treats WIFI as a virtual
+        // peripheral (ESP32-C3) `WIFI::regs()` does not exist.
+        let wifi = unsafe { LowLevelDriver::regs() };
         let crypto_key_slot = wifi.crypto_key_slot(key_slot);
 
         let mut key_bytes = [0x00u8; 32];
@@ -352,7 +354,9 @@ pub trait CryptoControl: HasLowLevelDriver {
     }
     /// Dump the values of the crypto control registers.
     fn dump_crypto_config(&self) {
-        let wifi = WIFI::regs();
+        // The PAC register block; on chips where esp-hal treats WIFI as a virtual
+        // peripheral (ESP32-C3) `WIFI::regs()` does not exist.
+        let wifi = unsafe { LowLevelDriver::regs() };
         for (i, interface_crypto_control) in wifi
             .crypto_control()
             .interface_crypto_control_iter()

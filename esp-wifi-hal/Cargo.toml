@@ -20,9 +20,13 @@ esp32 = { version = "=0.40.2", optional = true, features = [
 esp32s2 = { version = "=0.31.2", optional = true, features = [
   "critical-section",
 ] }
+esp32c3 = { version = "0.32", optional = true, features = [
+  "critical-section",
+] }
 
 esp-wifi-sys-esp32 = { version = "=0.2.0", optional = true }
 esp-wifi-sys-esp32s2 = { version = "=0.2.0", optional = true }
+esp-wifi-sys-esp32c3 = { version = "=0.2.0", optional = true }
 
 # Embassy dependencies
 embassy-futures = "0.1.2"
@@ -69,6 +73,13 @@ esp32s2 = [
   "esp-phy/esp32s2",
   "esp-sync/esp32s2",
 ]
+esp32c3 = [
+  "dep:esp32c3",
+  "esp-hal/esp32c3",
+  "esp-wifi-sys-esp32c3",
+  "esp-phy/esp32c3",
+  "esp-sync/esp32c3",
+]
 
 defmt = [
   "dep:defmt",
@@ -79,3 +90,7 @@ defmt = [
 ]
 log = ["dep:log", "defmt-or-log/log", "esp-phy/log-04", "esp-sync/log-04"]
 critical_section = []
+
+[patch.crates-io]
+# esp32c3 PAC with the reverse engineered WIFI block, generated from esp-pacs
+esp32c3 = { path = "../../esp-pacs/esp32c3" }

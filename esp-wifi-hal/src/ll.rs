@@ -22,6 +22,9 @@ cfg_select! {
 
         use esp_hal::peripherals::SYSCON;
     }
+    feature = "esp32c3" => {
+        use esp_hal::peripherals::APB_CTRL as SYSCON;
+    }
 }
 
 use esp_phy::{PhyInitGuard, enable_phy};
@@ -497,7 +500,7 @@ impl From<EdcaAccessCategory> for HardwareTxQueue {
     }
 }
 
-#[cfg(any(feature = "esp32", feature = "esp32s2"))]
+#[cfg(any(feature = "esp32", feature = "esp32s2", feature = "esp32c3"))]
 /// The number of "interfaces" supported by the hardware.
 pub const INTERFACE_COUNT: usize = 4;
 
@@ -600,7 +603,7 @@ impl LowLevelDriver {
     unsafe fn reset_mac(&self) {
         // Perform a full reset of the Wi-Fi module.
         cfg_select! {
-            any(feature = "esp32", feature = "esp32s2") => {
+            any(feature = "esp32", feature = "esp32s2", feature = "esp32c3") => {
                 let syscon = SYSCON::regs();
                 syscon.wifi_rst_en().modify(|_, w| w.mac_rst().set_bit());
                 syscon.wifi_rst_en().modify(|_, w| w.mac_rst().clear_bit());
@@ -631,6 +634,12 @@ impl LowLevelDriver {
                 const MAC_INIT_MASK: u32 = 0xff00efff;
                 const MAC_READY_MASK: u32 = 0x6000;
             }
+            feature = "esp32c3" => {
+                // From hal_mac_init/hal_mac_deinit in the ESP32-C3 libpp blob: the same bits as
+                // on the ESP32-S2, in the CTRL register at offset 0xca0.
+                const MAC_INIT_MASK: u32 = 0xff00efff;
+                const MAC_READY_MASK: u32 = 0x6000;
+            }
             _ => {
                 compile_error!("The MAC init mask may have to be updated for different chips.");
             }
@@ -638,7 +647,7 @@ impl LowLevelDriver {
         // Spin until the MAC state is marked as ready.
         // This is only required on the ESP32-S2.
         while !intialized
-            && cfg!(feature = "esp32s2")
+            && cfg!(any(feature = "esp32s2", feature = "esp32c3"))
             && Self::regs_internal().ctrl().read().bits() & MAC_READY_MASK != 0
         {}
         // If we are initializing the MAC, we need to clear some bits, by masking the reg, with the
@@ -664,6 +673,8 @@ impl LowLevelDriver {
         // be moved to open source code. In the meantime, we do the init, that we already understand a
         // second time in open source code, which should have no bad effects.
         unsafe {
+            #[cfg(osi_funcs_in_rom)]
+            crate::ffi::install_osi_funcs();
             hal_init();
         }
 
@@ -704,6 +715,8 @@ impl LowLevelDriver {
         let enable_mask = cfg_select! {
             feature = "esp32" => 0x00000406,
             feature = "esp32s2" => 0x000007cf,
+            // SYSTEM_WIFI_CLK_EN as used by esp_perip_clk_init in ESP-IDF (and esp-radio).
+            feature = "esp32c3" => 0x00fb9fcf,
             _ => compile_error!("If you're adding a new chip, you have to adjust the modem clock enable mask.")
         };
         SYSCON::regs()

@@ -1126,6 +1126,7 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                         trace!("RX: Discarding presumably invalid frame.");
                         self.dma_list_ref()
                             .lock(|dma_list| dma_list.borrow_mut().recycle(current));
+                        continue;
                     }
                 }
                 WIFI_RX_SIGNAL_QUEUE.next().await;

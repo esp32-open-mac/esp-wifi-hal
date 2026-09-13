@@ -126,6 +126,7 @@ impl DmaList {
             };
             self.set_rx_chain_base(next.map(NonNull::from));
             trace!("RX DMA: Took {:08x} from list", first as *mut _ as u32);
+            first.set_next(None);
 
             Some(first)
         } else {
@@ -154,6 +155,7 @@ impl DmaList {
     /// Returns a [DMAListItem] to the end of the list.
     pub fn recycle(&mut self, dma_list_descriptor: &mut DmaDescriptor) {
         dma_list_descriptor.reset_for_rx();
+        dma_list_descriptor.set_next(None);
 
         // If the DMA list is not empty, we attach the descriptor to the end, reload the hardware
         // descriptors and set the last pointer to the descriptor, under some weird conditions.

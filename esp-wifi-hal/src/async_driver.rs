@@ -1044,6 +1044,8 @@ mod private {
                 match last_res {
                     Ok(_) => break,
                     Err(TxError::MacProtocol(MacProtocolError::AckTimeout)) => {
+                        // Set the retry bit.
+                        mpdu_buf[1] |= bit!(3);
                         if let Some(ref mut contention_state) = edca_contention_state {
                             trace!("Incremented LRC");
                             contention_state.increment_lrc();
@@ -1059,9 +1061,8 @@ mod private {
                     _ => {}
                 }
             }
-            if let Some(byte) = mpdu_buf.get_mut(1) {
-                *byte &= !bit!(3);
-            }
+            // Clear the retry bit.
+            mpdu_buf[1] &= !bit!(3);
             if last_res.is_err() {
                 trace!("Transmission of MPDU failed.");
             }

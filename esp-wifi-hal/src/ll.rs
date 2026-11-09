@@ -12,6 +12,7 @@ use esp_hal::{
     dma::DmaDescriptor,
     interrupt::InterruptHandler,
     peripherals::{LPWR, WIFI as HalWIFI},
+    ram,
 };
 
 cfg_select! {
@@ -19,13 +20,12 @@ cfg_select! {
         use esp_hal::peripherals::DPORT as SYSCON;
     }
     feature = "esp32s2" => {
-
         use esp_hal::peripherals::SYSCON;
     }
 }
 
 use esp_phy::{PhyInitGuard, enable_phy};
-use macro_bits::{bit, check_bit};
+use macro_bits::check_bit;
 
 use crate::{
     esp_pac::{Interrupt as PacInterrupt, WIFI, wifi::crypto_key_slot::KEY_VALUE},
@@ -1039,36 +1039,7 @@ impl LowLevelDriver {
 
     // TX
 
-    /// Get raw transmission status bits.
-    unsafe fn raw_tx_status(tx_result: Result<(), ChannelAccessError>) -> u8 {
-        let wifi = LowLevelDriver::regs_internal();
-        (match tx_result {
-            Ok(()) => wifi.txq_state().tx_complete_status().read().bits(),
-            Err(ChannelAccessError::Timeout) => {
-                wifi.txq_state().tx_error_status().read().bits() >> 0x10
-            }
-            Err(ChannelAccessError::Collision) => wifi.txq_state().tx_error_status().read().bits(),
-        }) as u8
-    }
-    /// Clear slot transmission status bit.
-    unsafe fn clear_tx_slot_bit(tx_result: Result<(), ChannelAccessError>, slot: usize) {
-        let wifi = LowLevelDriver::regs_internal();
-        match tx_result {
-            Ok(()) => wifi
-                .txq_state()
-                .tx_complete_clear()
-                .modify(|_, w| w.slot(slot as u8).set_bit()),
-            Err(ChannelAccessError::Timeout) => wifi
-                .txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_timeout(slot as u8).set_bit()),
-            Err(ChannelAccessError::Collision) => wifi
-                .txq_state()
-                .tx_error_clear()
-                .modify(|_, w| w.slot_collision(slot as u8).set_bit()),
-        };
-    }
-    #[inline]
+    #[ram]
     /// Process a TX status.
     ///
     /// The provided closure will be called for each slot, with the [HardwareTxQueue] as a
@@ -1082,17 +1053,43 @@ impl LowLevelDriver {
     /// be called from there, since the Wi-Fi peripheral will have to be initialized there.
     pub unsafe fn process_tx_status(
         tx_result: Result<(), ChannelAccessError>,
-        f: impl Fn(HardwareTxQueue),
+        f: impl Fn(HardwareTxQueue, Result<(), ChannelAccessError>),
     ) {
-        let raw_status = unsafe { Self::raw_tx_status(tx_result) };
+        // Accessing the registers this way allows the compiler to optimize this better, and
+        // since this is called from ISR code, we want this to be quick.
+        let wifi = LowLevelDriver::regs_internal();
+        let txq_state = wifi.txq_state();
+        let (status_reg, clear_reg, queue_mask) = match tx_result {
+            Ok(()) => (
+                txq_state.tx_complete_status().as_ptr(),
+                txq_state.tx_complete_clear().as_ptr(),
+                0x1,
+            ),
+            Err(ChannelAccessError::Timeout) => (
+                txq_state.tx_error_status().as_ptr(),
+                txq_state.tx_error_clear().as_ptr(),
+                0x10000,
+            ),
+            Err(ChannelAccessError::Collision) => (
+                txq_state.tx_error_status().as_ptr(),
+                txq_state.tx_error_clear().as_ptr(),
+                0x1,
+            ),
+        };
+        let raw_status = unsafe { status_reg.read_volatile() };
         for queue in 0..5 {
-            if !check_bit!(raw_status, bit!(queue)) {
+            if !check_bit!(raw_status, queue_mask) {
                 continue;
             }
             // For some reason the slot numbering needs to be reversed when working with the
             // interrupt cause register.
-            (f)(HardwareTxQueue::from_hardware_slot(4 - queue).unwrap());
-            unsafe { Self::clear_tx_slot_bit(tx_result, queue) };
+            (f)(
+                HardwareTxQueue::from_hardware_slot(4 - queue).unwrap(),
+                tx_result,
+            );
+            unsafe {
+                clear_reg.write_volatile(clear_reg.read_volatile() | (queue_mask << queue));
+            };
         }
     }
     #[inline]

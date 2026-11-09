@@ -1,19 +1,19 @@
 use core::{
-    future::{Future, poll_fn},
-    task::Poll,
+    cell::UnsafeCell,
+    task::{Context, Poll},
 };
 
-use esp_hal::asynch::AtomicWaker;
-use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
+use critical_section::CriticalSection;
+use embassy_sync::waitqueue::WakerRegistration;
+use esp_hal::ram;
 
 use crate::ll::ChannelAccessError;
 
-/// A primitive for signaling the status of a TX slot.
-pub struct HardwareTxResultSignal {
-    state: AtomicU8,
-    waker: AtomicWaker,
+struct TxResultSignalState {
+    state: u8,
+    waker: WakerRegistration,
 }
-impl HardwareTxResultSignal {
+impl TxResultSignalState {
     /// A transmission is currently pending or the slot is inactive.
     const PENDING_OR_INACTIVE: u8 = 0;
     /// The tranmission has completed successfully.
@@ -22,93 +22,157 @@ impl HardwareTxResultSignal {
     const TIMEOUT: u8 = 2;
     /// A collision occured while transmitting.
     const COLLISION: u8 = 3;
+
     /// Create a new state signal.
     pub const fn new() -> Self {
         Self {
-            state: AtomicU8::new(Self::PENDING_OR_INACTIVE),
-            waker: AtomicWaker::new(),
+            state: Self::PENDING_OR_INACTIVE,
+            waker: WakerRegistration::new(),
         }
     }
     /// Reset the slot state signal.
-    pub fn reset(&self) {
-        self.state
-            .store(Self::PENDING_OR_INACTIVE, Ordering::Release);
+    pub fn reset(&mut self) {
+        self.state = Self::PENDING_OR_INACTIVE;
     }
+    #[inline]
     /// Signal a slot state.
-    pub fn signal(&self, slot_status: Result<(), ChannelAccessError>) {
-        self.state.store(
-            match slot_status {
-                Ok(()) => Self::SUCCESS,
-                Err(ChannelAccessError::Timeout) => Self::TIMEOUT,
-                Err(ChannelAccessError::Collision) => Self::COLLISION,
-            },
-            Ordering::Relaxed,
-        );
+    pub fn signal(&mut self, slot_status: Result<(), ChannelAccessError>) {
+        self.state = match slot_status {
+            Ok(()) => Self::SUCCESS,
+            Err(ChannelAccessError::Timeout) => Self::TIMEOUT,
+            Err(ChannelAccessError::Collision) => Self::COLLISION,
+        };
         self.waker.wake();
     }
-    /// Wait for a slot state change.
-    pub fn wait(
-        &self,
-    ) -> impl Future<Output = Result<(), ChannelAccessError>> + Send + Sync + use<'_> {
-        poll_fn(|cx| {
-            // We need a single core lock here, as the state may internally be updated by the ISR.
-            esp_sync::RawMutex::new().lock(|| {
-                let state = self.state.load(Ordering::Acquire);
-                if state != Self::PENDING_OR_INACTIVE {
-                    self.reset();
-                    Poll::Ready(match state {
-                        Self::SUCCESS => Ok(()),
-                        Self::TIMEOUT => Err(ChannelAccessError::Timeout),
-                        Self::COLLISION => Err(ChannelAccessError::Collision),
-                        _ => unreachable!(),
-                    })
-                } else {
-                    self.waker.register(cx.waker());
-                    Poll::Pending
-                }
+    /// Poll the signals state.
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ChannelAccessError>> {
+        let state = self.state;
+        if state != Self::PENDING_OR_INACTIVE {
+            self.reset();
+            Poll::Ready(match state {
+                Self::SUCCESS => Ok(()),
+                Self::TIMEOUT => Err(ChannelAccessError::Timeout),
+                Self::COLLISION => Err(ChannelAccessError::Collision),
+                _ => unreachable!(),
             })
-        })
+        } else {
+            self.waker.register(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+/// A primitive for signaling the status of a TX slot.
+pub struct HardwareTxResultSignal {
+    inner: critical_section::Mutex<UnsafeCell<TxResultSignalState>>,
+}
+impl HardwareTxResultSignal {
+    /// Create a new state signal.
+    pub const fn new() -> Self {
+        Self {
+            inner: critical_section::Mutex::new(UnsafeCell::new(TxResultSignalState::new())),
+        }
+    }
+    /// Access the inenr state.
+    ///
+    /// # Safety
+    /// This must not be called in a reentrant way.
+    unsafe fn access_inner<T>(
+        &self,
+        cs: CriticalSection<'_>,
+        f: impl FnOnce(&mut TxResultSignalState) -> T,
+    ) -> T {
+        f(unsafe { self.inner.borrow(cs).get().as_mut_unchecked() })
+    }
+    /// Reset the slot state signal.
+    pub fn reset(&self, cs: CriticalSection<'_>) {
+        unsafe { self.access_inner(cs, TxResultSignalState::reset) }
+    }
+    #[inline]
+    /// Signal a slot state.
+    pub fn signal(&self, cs: CriticalSection<'_>, slot_status: Result<(), ChannelAccessError>) {
+        unsafe {
+            self.access_inner(cs, |ref_mut| ref_mut.signal(slot_status));
+        }
+    }
+
+    /// Poll the signals state.
+    pub fn poll(
+        &self,
+        cs: CriticalSection<'_>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), ChannelAccessError>> {
+        unsafe { self.access_inner(cs, |ref_mut| ref_mut.poll(cx)) }
     }
 }
 
-/// A synchronization primitive, which allows queueing a number signals, to be awaited.
-pub struct SignalQueue {
-    waker: AtomicWaker,
-    queued_signals: AtomicUsize,
+struct SignalQueueState {
+    queued_signals: usize,
+    waker: WakerRegistration,
 }
-impl SignalQueue {
+impl SignalQueueState {
     pub const fn new() -> Self {
         Self {
-            waker: AtomicWaker::new(),
-            queued_signals: AtomicUsize::new(0),
+            queued_signals: 0,
+            waker: WakerRegistration::new(),
         }
     }
     /// Increments the queue signals by one.
-    pub fn put(&self) {
-        if self.queued_signals.fetch_add(1, Ordering::AcqRel) == 0 {
+    pub fn put(&mut self) {
+        self.queued_signals += 1;
+        if self.queued_signals == 1 {
             // If there were already some signals queued up, there's no need to wake the task again.
             self.waker.wake();
         }
     }
     /// Reset the amount of signals in the queue back to zero.
-    pub fn reset(&self) {
-        self.queued_signals.store(0, Ordering::Release);
+    pub fn reset(&mut self) {
+        self.queued_signals = 0;
+    }
+    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let queued_signals = self.queued_signals;
+        if queued_signals == 0 {
+            self.waker.register(cx.waker());
+            Poll::Pending
+        } else {
+            self.queued_signals -= 1;
+            Poll::Ready(())
+        }
+    }
+}
+/// A synchronization primitive, which allows queueing a number signals, to be awaited.
+pub struct SignalQueue {
+    inner: critical_section::Mutex<UnsafeCell<SignalQueueState>>,
+}
+impl SignalQueue {
+    /// Create a new signal queue.
+    pub const fn new() -> Self {
+        Self {
+            inner: critical_section::Mutex::new(UnsafeCell::new(SignalQueueState::new())),
+        }
+    }
+    /// Access the inenr state.
+    ///
+    /// # Safety
+    /// This must not be called in a reentrant way.
+    unsafe fn access_inner<T>(
+        &self,
+        cs: CriticalSection<'_>,
+        f: impl FnOnce(&mut SignalQueueState) -> T,
+    ) -> T {
+        f(unsafe { self.inner.borrow(cs).get().as_mut_unchecked() })
+    }
+    #[ram]
+    /// Increments the queue signals by one.
+    pub fn put(&self, cs: CriticalSection<'_>) {
+        unsafe { self.access_inner(cs, SignalQueueState::put) }
+    }
+    /// Reset the amount of signals in the queue back to zero.
+    pub fn reset(&self, cs: CriticalSection<'_>) {
+        unsafe { self.access_inner(cs, SignalQueueState::reset) }
     }
     /// Asynchronously wait for the next signal.
-    pub fn next(&self) -> impl Future<Output = ()> + Send + Sync + use<'_> {
-        poll_fn(|cx| {
-            esp_sync::RawMutex::new().lock(|| {
-                let queued_signals = self.queued_signals.load(Ordering::Acquire);
-                if queued_signals == 0 {
-                    self.waker.register(cx.waker());
-                    Poll::Pending
-                } else {
-                    self.queued_signals
-                        .store(queued_signals - 1, Ordering::Release);
-                    Poll::Ready(())
-                }
-            })
-        })
+    pub fn poll_next(&self, cs: CriticalSection<'_>, cx: &mut Context<'_>) -> Poll<()> {
+        unsafe { self.access_inner(cs, |ref_mut| ref_mut.poll(cx)) }
     }
 }
 /// A drop guard, which executes the provided closure on drop.

@@ -1,4 +1,9 @@
-use core::{cell::RefCell, future::Future, ops::RangeInclusive, pin::Pin};
+use core::{
+    cell::RefCell,
+    future::{Future, poll_fn},
+    ops::RangeInclusive,
+    pin::Pin,
+};
 use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::{
@@ -14,7 +19,7 @@ use crate::{
     rates::TxPhyRate,
 };
 use embassy_sync::blocking_mutex;
-use esp_hal::{dma::DmaDescriptor, handler, peripherals::WIFI};
+use esp_hal::{dma::DmaDescriptor, handler, peripherals::WIFI, ram};
 use macro_bits::{bit, check_bit};
 
 use crate::{
@@ -24,41 +29,35 @@ use crate::{
 };
 
 #[handler]
+#[ram]
 fn mac_handler() {
     let cause = unsafe { LowLevelDriver::get_and_clear_mac_interrupt_cause() };
     if cause.is_empty() {
         return;
     }
-
-    if cause.rx() {
-        WIFI_RX_SIGNAL_QUEUE.put();
-    }
-    if cause.tx_success() {
-        let tx_queue_status = Ok(());
-        unsafe {
-            LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
-                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
-            })
-        };
-    }
-    if cause.tx_timeout() {
-        let tx_queue_status = Err(ChannelAccessError::Timeout);
-        unsafe {
-            LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
-                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
+    critical_section::with(|cs| {
+        if cause.rx() {
+            WIFI_RX_SIGNAL_QUEUE.put(cs);
+        }
+        let process_queue_closure = |queue: HardwareTxQueue, tx_queue_status| unsafe {
+            HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(cs, tx_queue_status);
+            if tx_queue_status.is_err() {
                 LowLevelDriver::set_tx_queue_status(queue, HardwareTxQueueStatus::Disabled);
-            })
+            }
         };
-    }
-    if cause.tx_collision() {
-        let tx_queue_status = Err(ChannelAccessError::Collision);
-        unsafe {
-            LowLevelDriver::process_tx_status(tx_queue_status, |queue| {
-                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].signal(tx_queue_status);
-                LowLevelDriver::set_tx_queue_status(queue, HardwareTxQueueStatus::Disabled);
-            })
-        };
-    }
+        if cause.tx_success() {
+            let tx_queue_status = Ok(());
+            unsafe { LowLevelDriver::process_tx_status(tx_queue_status, process_queue_closure) };
+        }
+        if cause.tx_timeout() {
+            let tx_queue_status = Err(ChannelAccessError::Timeout);
+            unsafe { LowLevelDriver::process_tx_status(tx_queue_status, process_queue_closure) };
+        }
+        if cause.tx_collision() {
+            let tx_queue_status = Err(ChannelAccessError::Collision);
+            unsafe { LowLevelDriver::process_tx_status(tx_queue_status, process_queue_closure) };
+        }
+    })
 }
 #[cfg(pwr_interrupt_present)]
 #[handler]
@@ -708,7 +707,13 @@ static CURRENT_SEQUENCE_NUMBER: AtomicU16 = AtomicU16::new(0);
 
 // Access to the DMA list, shouldn't really be public.
 mod private {
-    use core::{cell::RefCell, future::Future, ops::DerefMut, pin::Pin, sync::atomic::Ordering};
+    use core::{
+        cell::RefCell,
+        future::{Future, poll_fn},
+        ops::DerefMut,
+        pin::Pin,
+        sync::atomic::Ordering,
+    };
 
     use embassy_sync::blocking_mutex;
     use esp_hal::dma::{DmaDescriptor, Owner};
@@ -829,7 +834,7 @@ mod private {
             // dropped.
             let tx_done_wait_drop_guard = DropGuard::new(move || {
                 ll_driver.tx_done(queue);
-                hardware_tx_result_signal.reset();
+                critical_section::with(|cs| hardware_tx_result_signal.reset(cs));
             });
             // If any error was forwarded through the duration, we don't do anything here and
             // return an error on the first poll.
@@ -846,7 +851,7 @@ mod private {
                 );
 
                 // This compensates for other slots being marked as done, without it being used at all.
-                hardware_tx_result_signal.reset();
+                critical_section::with(|cs| hardware_tx_result_signal.reset(cs));
                 ll_driver.start_tx_queue(queue);
             }
 
@@ -858,16 +863,19 @@ mod private {
             async move {
                 fallible_params?;
                 // We wait for the transmission to complete here.
-                HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()]
-                    .wait()
-                    .await
-                    .inspect(|_| {
-                        if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
-                            ll_driver.run_power_control();
-                            FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
-                        }
+                poll_fn(|cx| {
+                    critical_section::with(|cs| {
+                        HARDWARE_TX_RESULT_SIGNALS[queue.hardware_slot()].poll(cs, cx)
                     })
-                    .map_err(TxError::ChannelAccess)?;
+                })
+                .await
+                .inspect(|_| {
+                    if FRAMES_SINCE_LAST_TXPWR_CTRL.fetch_add(1, Ordering::Relaxed) == 4 {
+                        ll_driver.run_power_control();
+                        FRAMES_SINCE_LAST_TXPWR_CTRL.store(0, Ordering::Relaxed);
+                    }
+                })
+                .map_err(TxError::ChannelAccess)?;
 
                 tx_done_wait_drop_guard.detonate();
 
@@ -1129,7 +1137,8 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
                         continue;
                     }
                 }
-                WIFI_RX_SIGNAL_QUEUE.next().await;
+                poll_fn(|cx| critical_section::with(|cs| WIFI_RX_SIGNAL_QUEUE.poll_next(cs, cx)))
+                    .await;
             };
 
             BorrowedBuffer {
@@ -1145,7 +1154,7 @@ pub trait AsyncReceive<'res>: HasDmaList<'res> {
 
         // If we don't reset the RX signal queue, we might get a bunch of false alarms the next
         // time RX is called.
-        WIFI_RX_SIGNAL_QUEUE.reset();
+        critical_section::with(|cs| WIFI_RX_SIGNAL_QUEUE.reset(cs));
     }
     /// Temporarily pause RX, or resume it.
     ///

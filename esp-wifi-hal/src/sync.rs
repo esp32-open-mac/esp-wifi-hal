@@ -4,7 +4,7 @@ use core::{
 };
 
 use esp_hal::asynch::AtomicWaker;
-use portable_atomic::{AtomicU8, AtomicUsize, Ordering};
+use portable_atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use crate::ll::ChannelAccessError;
 
@@ -62,6 +62,45 @@ impl HardwareTxResultSignal {
                         Self::COLLISION => Err(ChannelAccessError::Collision),
                         _ => unreachable!(),
                     })
+                } else {
+                    self.waker.register(cx.waker());
+                    Poll::Pending
+                }
+            })
+        })
+    }
+}
+
+/// A primitive for signaling, that a hardware event occured.
+///
+/// Multiple events before the next wait collapse into one.
+pub struct EventSignal {
+    fired: AtomicBool,
+    waker: AtomicWaker,
+}
+impl EventSignal {
+    /// Create a new event signal.
+    pub const fn new() -> Self {
+        Self {
+            fired: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+        }
+    }
+    /// Signal, that the event occured.
+    pub fn signal(&self) {
+        self.fired.store(true, Ordering::Release);
+        self.waker.wake();
+    }
+    /// Discard a pending event.
+    pub fn reset(&self) {
+        self.fired.store(false, Ordering::Release);
+    }
+    /// Wait for the next event.
+    pub fn wait(&self) -> impl Future<Output = ()> + Send + Sync + use<'_> {
+        poll_fn(|cx| {
+            esp_sync::RawMutex::new().lock(|| {
+                if self.fired.swap(false, Ordering::AcqRel) {
+                    Poll::Ready(())
                 } else {
                     self.waker.register(cx.waker());
                     Poll::Pending

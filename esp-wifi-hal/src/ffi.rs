@@ -4,7 +4,7 @@ use esp_hal::{clock::xtal_clock, ram};
 
 #[cfg(osi_funcs_required)]
 #[allow(non_upper_case_globals)]
-#[unsafe(no_mangle)]
+#[cfg_attr(not(osi_funcs_in_rom), unsafe(no_mangle))]
 #[ram]
 static g_osi_funcs_p: &crate::esp_wifi_sys::include::wifi_osi_funcs_t =
     &crate::esp_wifi_sys::include::wifi_osi_funcs_t {
@@ -119,7 +119,8 @@ static g_osi_funcs_p: &crate::esp_wifi_sys::include::wifi_osi_funcs_t =
         _coex_wifi_release: None,
         _coex_wifi_channel_set: None,
         _coex_event_duration_get: None,
-        _coex_pti_get: None,
+        // Called by `hal_init` (via `hal_coex_pti_init`) on the ESP32-C3.
+        _coex_pti_get: Some(coex_pti_get),
         _coex_schm_status_bit_clear: None,
         _coex_schm_status_bit_set: None,
         _coex_schm_interval_set: None,
@@ -149,6 +150,27 @@ static g_osi_funcs_p: &crate::esp_wifi_sys::include::wifi_osi_funcs_t =
 
         _magic: crate::esp_wifi_sys::include::ESP_WIFI_OS_ADAPTER_MAGIC as i32,
     };
+
+/// Point the ROM's `g_osi_funcs_p` at our OS adapter table.
+///
+/// On chips where parts of the Wi-Fi stack are in ROM, the variable is owned by the ROM and is
+/// normally filled in by `esp_wifi_init_internal`, which we never call.
+#[cfg(osi_funcs_in_rom)]
+pub(crate) unsafe fn install_osi_funcs() {
+    unsafe extern "C" {
+        #[link_name = "g_osi_funcs_p"]
+        static mut ROM_OSI_FUNCS_P: *const crate::esp_wifi_sys::include::wifi_osi_funcs_t;
+    }
+    unsafe {
+        ROM_OSI_FUNCS_P = g_osi_funcs_p as *const _;
+    }
+}
+
+/// Coexistence priority lookup. We have no coexistence, so report "no PTI" for every event.
+#[allow(unused)]
+unsafe extern "C" fn coex_pti_get(_event: u32, _pti: *mut u8) -> i32 {
+    0
+}
 
 #[ram]
 #[unsafe(no_mangle)]
@@ -242,6 +264,8 @@ unsafe extern "C" {
     }
     pub fn hal_init();
     pub fn tx_pwctrl_background(_: u8, _: u8);
+    #[cfg_attr(feature = "esp32c3", link_name = "rom_enable_wifi_agc")]
     pub fn enable_wifi_agc();
+    #[cfg_attr(feature = "esp32c3", link_name = "rom_disable_wifi_agc")]
     pub fn disable_wifi_agc();
 }
